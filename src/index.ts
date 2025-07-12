@@ -17,6 +17,9 @@ import { Api } from "telegram/tl/index.js";
 const GetRecentMessagesSchema = z.object({
   channel: z.string().describe("Channel username or ID (e.g., @channelname or channel ID)"),
   limit: z.number().optional().default(10).describe("Number of recent messages to retrieve (default: 10, max: 100)"),
+  sinceMinutes: z.number().optional().describe("Get messages from the last N minutes"),
+  sinceHours: z.number().optional().describe("Get messages from the last N hours"),
+  sinceDate: z.string().optional().describe("Get messages since this date (ISO format: 2023-12-01T10:00:00Z)"),
 });
 
 const GetChannelInfoSchema = z.object({
@@ -27,11 +30,34 @@ const SearchMessagesSchema = z.object({
   channel: z.string().describe("Channel username or ID"),
   query: z.string().describe("Search query"),
   limit: z.number().optional().default(10).describe("Number of messages to retrieve (default: 10, max: 100)"),
+  sinceMinutes: z.number().optional().describe("Search messages from the last N minutes"),
+  sinceHours: z.number().optional().describe("Search messages from the last N hours"),
+  sinceDate: z.string().optional().describe("Search messages since this date (ISO format: 2023-12-01T10:00:00Z)"),
 });
 
 const GetAvailableChannelsSchema = z.object({
   limit: z.number().optional().default(50).describe("Number of channels to retrieve (default: 50, max: 200)"),
   includeGroups: z.boolean().optional().default(false).describe("Include groups in addition to channels (default: false)"),
+});
+
+const MarkMessagesReadSchema = z.object({
+  channel: z.string().describe("Channel username or ID"),
+  messageIds: z.array(z.number()).optional().describe("Specific message IDs to mark as read (optional - if not provided, marks all messages as read)"),
+  maxId: z.number().optional().describe("Mark all messages up to this message ID as read (alternative to messageIds)"),
+});
+
+const CheckUnreadMessagesSchema = z.object({
+  limit: z.number().optional().default(50).describe("Number of chats to check (default: 50, max: 200)"),
+  includeChannels: z.boolean().optional().default(false).describe("Include channels in addition to private chats and groups (default: false)"),
+  onlyWithUnread: z.boolean().optional().default(true).describe("Only return chats with unread messages (default: true)"),
+});
+
+const GetPrivateMessagesSchema = z.object({
+  contact: z.string().describe("Contact identifier: username (@username), phone number (+1234567890), or user ID"),
+  limit: z.number().optional().default(10).describe("Number of messages to retrieve (default: 10, max: 100)"),
+  sinceMinutes: z.number().optional().describe("Get messages from the last N minutes"),
+  sinceHours: z.number().optional().describe("Get messages from the last N hours"),
+  sinceDate: z.string().optional().describe("Get messages since this date (ISO format: 2023-12-01T10:00:00Z)"),
 });
 
 class TelegramMCPServer {
@@ -54,6 +80,19 @@ class TelegramMCPServer {
 
     this.session = new StringSession("");
     this.setupHandlers();
+  }
+
+  private calculateCutoffDate(sinceMinutes?: number, sinceHours?: number, sinceDate?: string): Date | null {
+    if (sinceDate) {
+      return new Date(sinceDate);
+    }
+    if (sinceMinutes) {
+      return new Date(Date.now() - sinceMinutes * 60 * 1000);
+    }
+    if (sinceHours) {
+      return new Date(Date.now() - sinceHours * 60 * 60 * 1000);
+    }
+    return null;
   }
 
   private async initializeTelegramClient(): Promise<void> {
@@ -92,13 +131,13 @@ class TelegramMCPServer {
         tools: [
           {
             name: "get_recent_messages",
-            description: "Get recent messages from a Telegram channel",
+            description: "Get recent messages from a Telegram channel, group, or private chat",
             inputSchema: {
               type: "object",
               properties: {
                 channel: {
                   type: "string",
-                  description: "Channel username (e.g., @channelname) or channel ID",
+                  description: "Channel username (@channelname), group username, private chat username (@username), phone number (+1234567890), or chat ID",
                 },
                 limit: {
                   type: "number",
@@ -107,19 +146,33 @@ class TelegramMCPServer {
                   minimum: 1,
                   maximum: 100,
                 },
+                sinceMinutes: {
+                  type: "number",
+                  description: "Get messages from the last N minutes",
+                  minimum: 1,
+                },
+                sinceHours: {
+                  type: "number",
+                  description: "Get messages from the last N hours",
+                  minimum: 1,
+                },
+                sinceDate: {
+                  type: "string",
+                  description: "Get messages since this date (ISO format: 2023-12-01T10:00:00Z)",
+                },
               },
               required: ["channel"],
             },
           },
           {
             name: "get_channel_info",
-            description: "Get information about a Telegram channel",
+            description: "Get information about a Telegram channel, group, or private chat",
             inputSchema: {
               type: "object",
               properties: {
                 channel: {
                   type: "string",
-                  description: "Channel username (e.g., @channelname) or channel ID",
+                  description: "Channel username (@channelname), group username, private chat username (@username), phone number (+1234567890), or chat ID",
                 },
               },
               required: ["channel"],
@@ -127,13 +180,13 @@ class TelegramMCPServer {
           },
           {
             name: "search_messages",
-            description: "Search for messages in a Telegram channel",
+            description: "Search for messages in a Telegram channel, group, or private chat",
             inputSchema: {
               type: "object",
               properties: {
                 channel: {
                   type: "string",
-                  description: "Channel username (e.g., @channelname) or channel ID",
+                  description: "Channel username (@channelname), group username, private chat username (@username), phone number (+1234567890), or chat ID",
                 },
                 query: {
                   type: "string",
@@ -145,6 +198,20 @@ class TelegramMCPServer {
                   default: 10,
                   minimum: 1,
                   maximum: 100,
+                },
+                sinceMinutes: {
+                  type: "number",
+                  description: "Search messages from the last N minutes",
+                  minimum: 1,
+                },
+                sinceHours: {
+                  type: "number",
+                  description: "Search messages from the last N hours",
+                  minimum: 1,
+                },
+                sinceDate: {
+                  type: "string",
+                  description: "Search messages since this date (ISO format: 2023-12-01T10:00:00Z)",
                 },
               },
               required: ["channel", "query"],
@@ -172,6 +239,93 @@ class TelegramMCPServer {
               required: [],
             },
           },
+          {
+            name: "mark_messages_read",
+            description: "Mark messages as read in a Telegram chat, group, or private conversation (not supported for broadcast channels)",
+            inputSchema: {
+              type: "object",
+              properties: {
+                channel: {
+                  type: "string",
+                  description: "Channel username, group username, private chat username (@username), phone number (+1234567890), or chat ID (works with groups/supergroups/private chats, not broadcast channels)",
+                },
+                messageIds: {
+                  type: "array",
+                  items: {
+                    type: "number",
+                  },
+                  description: "Specific message IDs to mark as read (optional - if not provided, marks all messages as read)",
+                },
+                maxId: {
+                  type: "number",
+                  description: "Mark all messages up to this message ID as read (alternative to messageIds)",
+                },
+              },
+              required: ["channel"],
+            },
+          },
+          {
+            name: "check_unread_messages",
+            description: "Check for unread messages in private chats and groups",
+            inputSchema: {
+              type: "object",
+              properties: {
+                limit: {
+                  type: "number",
+                  description: "Number of chats to check (default: 50, max: 200)",
+                  default: 50,
+                  minimum: 1,
+                  maximum: 200,
+                },
+                includeChannels: {
+                  type: "boolean",
+                  description: "Include channels in addition to private chats and groups (default: false)",
+                  default: false,
+                },
+                onlyWithUnread: {
+                  type: "boolean",
+                  description: "Only return chats with unread messages (default: true)",
+                  default: true,
+                },
+              },
+              required: [],
+            },
+          },
+          {
+            name: "get_private_messages",
+            description: "Get messages from a private chat conversation",
+            inputSchema: {
+              type: "object",
+              properties: {
+                contact: {
+                  type: "string",
+                  description: "Contact identifier: username (@username), phone number (+1234567890), or user ID",
+                },
+                limit: {
+                  type: "number",
+                  description: "Number of messages to retrieve (default: 10, max: 100)",
+                  default: 10,
+                  minimum: 1,
+                  maximum: 100,
+                },
+                sinceMinutes: {
+                  type: "number",
+                  description: "Get messages from the last N minutes",
+                  minimum: 1,
+                },
+                sinceHours: {
+                  type: "number",
+                  description: "Get messages from the last N hours",
+                  minimum: 1,
+                },
+                sinceDate: {
+                  type: "string",
+                  description: "Get messages since this date (ISO format: 2023-12-01T10:00:00Z)",
+                },
+              },
+              required: ["contact"],
+            },
+          },
         ] as Tool[],
       };
     });
@@ -193,6 +347,12 @@ class TelegramMCPServer {
             return await this.searchMessages(args);
           case "get_available_channels":
             return await this.getAvailableChannels(args);
+          case "mark_messages_read":
+            return await this.markMessagesRead(args);
+          case "check_unread_messages":
+            return await this.checkUnreadMessages(args);
+          case "get_private_messages":
+            return await this.getPrivateMessages(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -211,7 +371,7 @@ class TelegramMCPServer {
   }
 
   private async getRecentMessages(args: unknown): Promise<CallToolResult> {
-    const { channel, limit } = GetRecentMessagesSchema.parse(args);
+    const { channel, limit, sinceMinutes, sinceHours, sinceDate } = GetRecentMessagesSchema.parse(args);
 
     if (!this.client) {
       throw new Error("Telegram client not initialized");
@@ -221,33 +381,94 @@ class TelegramMCPServer {
       // Resolve channel entity
       const entity = await this.client.getEntity(channel);
       
+      // Calculate cutoff date if time filtering is requested
+      const cutoffDate = this.calculateCutoffDate(sinceMinutes, sinceHours, sinceDate);
+      
       // Get recent messages
-      const messages = await this.client.getMessages(entity, { limit });
+      const messages = await this.client.getMessages(entity, { limit: cutoffDate ? limit * 3 : limit });
 
-      const formattedMessages = messages.map((msg: any) => {
-        const date = new Date(msg.date * 1000).toISOString();
-        const sender = msg.fromId ? `ID: ${msg.fromId}` : "Channel";
+      let filteredMessages = messages.map((msg: any) => {
+        const date = new Date(msg.date * 1000);
         
-        return {
+        // Determine sender info based on entity type
+        let sender = "Unknown";
+        let isOutgoing = false;
+        
+        if ((entity as any).className === "User") {
+          // Private chat
+          if (msg.out) {
+            sender = "You";
+            isOutgoing = true;
+          } else {
+            const firstName = (entity as any).firstName || "";
+            const lastName = (entity as any).lastName || "";
+            sender = `${firstName} ${lastName}`.trim() || (entity as any).username || "Contact";
+          }
+        } else {
+          // Channel or group
+          if (msg.out) {
+            sender = "You";
+            isOutgoing = true;
+          } else {
+            sender = msg.fromId ? `ID: ${msg.fromId}` : "Channel";
+          }
+        }
+        
+        const messageData: any = {
           id: msg.id,
-          date,
+          date: date.toISOString(),
+          timestamp: msg.date,
           sender,
           text: msg.text || "[Media/Non-text message]",
-          views: msg.views || 0,
         };
+
+        // Add additional fields based on entity type
+        if ((entity as any).className === "User") {
+          messageData.isOutgoing = isOutgoing;
+          messageData.messageType = msg.text ? "text" : "media";
+        } else {
+          messageData.views = msg.views || 0;
+        }
+
+        if (msg.replyToMsgId) {
+          messageData.replyToMsgId = msg.replyToMsgId;
+        }
+
+        return messageData;
       });
 
+      // Apply time filtering if specified
+      if (cutoffDate) {
+        filteredMessages = filteredMessages.filter(msg => 
+          new Date(msg.timestamp * 1000) >= cutoffDate
+        );
+        // Limit after filtering
+        filteredMessages = filteredMessages.slice(0, limit);
+      }
+
       const channelTitle = (entity as any).title || (entity as any).firstName || channel;
+
+      const result: any = {
+        channel: channelTitle,
+        messagesCount: filteredMessages.length,
+        messages: filteredMessages,
+      };
+
+      // Add time filter info to result
+      if (cutoffDate) {
+        result.timeFilter = {
+          since: cutoffDate.toISOString(),
+          sinceMinutes,
+          sinceHours,
+          sinceDate,
+        };
+      }
 
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({
-              channel: channelTitle,
-              messagesCount: formattedMessages.length,
-              messages: formattedMessages,
-            }, null, 2),
+            text: JSON.stringify(result, null, 2),
           },
         ],
       };
@@ -297,7 +518,7 @@ class TelegramMCPServer {
   }
 
   private async searchMessages(args: unknown): Promise<CallToolResult> {
-    const { channel, query, limit } = SearchMessagesSchema.parse(args);
+    const { channel, query, limit, sinceMinutes, sinceHours, sinceDate } = SearchMessagesSchema.parse(args);
 
     if (!this.client) {
       throw new Error("Telegram client not initialized");
@@ -306,41 +527,68 @@ class TelegramMCPServer {
     try {
       const entity = await this.client.getEntity(channel);
       
-      // Search messages
+      // Calculate cutoff date if time filtering is requested
+      const cutoffDate = this.calculateCutoffDate(sinceMinutes, sinceHours, sinceDate);
+      
+      // Search messages - if we have time filter, get more results to account for filtering
+      const searchLimit = cutoffDate ? Math.min(limit * 5, 100) : limit;
+      
       const result = await this.client.invoke(
         new Api.messages.Search({
           peer: entity,
           q: query,
-          limit,
+          limit: searchLimit,
           filter: new Api.InputMessagesFilterEmpty(),
         })
       );
 
-      const messages = (result as any).messages?.map((msg: any) => {
-        const date = new Date(msg.date * 1000).toISOString();
+      let messages = (result as any).messages?.map((msg: any) => {
+        const date = new Date(msg.date * 1000);
         const sender = msg.fromId ? `ID: ${msg.fromId}` : "Channel";
         
         return {
           id: msg.id,
-          date,
+          date: date.toISOString(),
+          timestamp: msg.date,
           sender,
           text: msg.message || "[Media/Non-text message]",
           views: msg.views || 0,
         };
       }) || [];
 
+      // Apply time filtering if specified
+      if (cutoffDate) {
+        messages = messages.filter((msg: any) => 
+          new Date(msg.timestamp * 1000) >= cutoffDate
+        );
+        // Limit after filtering
+        messages = messages.slice(0, limit);
+      }
+
       const channelTitle = (entity as any).title || (entity as any).firstName || channel;
+
+      const searchResult: any = {
+        channel: channelTitle,
+        query,
+        resultsCount: messages.length,
+        messages,
+      };
+
+      // Add time filter info to result
+      if (cutoffDate) {
+        searchResult.timeFilter = {
+          since: cutoffDate.toISOString(),
+          sinceMinutes,
+          sinceHours,
+          sinceDate,
+        };
+      }
 
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({
-              channel: channelTitle,
-              query,
-              resultsCount: messages.length,
-              messages,
-            }, null, 2),
+            text: JSON.stringify(searchResult, null, 2),
           },
         ],
       };
@@ -416,6 +664,413 @@ class TelegramMCPServer {
       };
     } catch (error) {
       throw new Error(`Failed to get available channels: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async markMessagesRead(args: unknown): Promise<CallToolResult> {
+    const { channel, messageIds, maxId } = MarkMessagesReadSchema.parse(args);
+
+    if (!this.client) {
+      throw new Error("Telegram client not initialized");
+    }
+
+    try {
+      // Resolve channel entity
+      const entity = await this.client.getEntity(channel);
+      const channelTitle = (entity as any).title || (entity as any).firstName || channel;
+      const entityType = (entity as any).className;
+
+      // Check if it's a broadcast channel
+      const isChannel = entityType === "Channel" && (entity as any).broadcast;
+      
+      if (isChannel) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                channel: channelTitle,
+                message: "Cannot mark messages as read in broadcast channels. This operation is only supported for private chats and groups.",
+                reason: "Telegram API limitation: broadcast channels don't support read history operations for regular users",
+                suggestion: "Use this feature with private groups or supergroups instead",
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      // Determine the best API method based on entity type
+      let result: any;
+      let markedCount = 0;
+      let apiMethod = "ReadHistory";
+
+      // For private chats (User entities), we might need different handling
+      if (entityType === "User") {
+        // For private chats, try multiple approaches
+        try {
+          if (messageIds && messageIds.length > 0) {
+            // First try to mark specific message contents as read
+            try {
+              await this.client.invoke(
+                new Api.messages.ReadMessageContents({
+                  id: messageIds,
+                })
+              );
+              apiMethod = "ReadMessageContents";
+            } catch (contentError) {
+              // Fall back to ReadHistory
+              result = await this.client.invoke(
+                new Api.messages.ReadHistory({
+                  peer: entity,
+                  maxId: Math.max(...messageIds),
+                })
+              );
+              apiMethod = "ReadHistory";
+            }
+            markedCount = messageIds.length;
+          } else if (maxId) {
+            // Mark all messages up to maxId as read in private chat
+            result = await this.client.invoke(
+              new Api.messages.ReadHistory({
+                peer: entity,
+                maxId: maxId,
+              })
+            );
+            markedCount = maxId;
+          } else {
+            // Mark all messages as read in private chat
+            const messages = await this.client.getMessages(entity, { limit: 1 });
+            if (messages.length > 0) {
+              const latestMessageId = messages[0].id;
+              result = await this.client.invoke(
+                new Api.messages.ReadHistory({
+                  peer: entity,
+                  maxId: latestMessageId,
+                })
+              );
+              markedCount = latestMessageId;
+            } else {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      success: true,
+                      channel: channelTitle,
+                      message: "No messages to mark as read",
+                      markedCount: 0,
+                    }, null, 2),
+                  },
+                ],
+              };
+            }
+          }
+        } catch (readHistoryError) {
+          // If ReadHistory fails for private chat, try alternative approach
+          console.error("ReadHistory failed for private chat, trying alternative approach:", readHistoryError);
+          
+          throw new Error(`Could not mark messages as read in private chat. This might be due to chat encryption or API restrictions. Error: ${readHistoryError instanceof Error ? readHistoryError.message : String(readHistoryError)}`);
+        }
+      } else {
+        // For groups and supergroups, use the standard approach
+        if (messageIds && messageIds.length > 0) {
+          result = await this.client.invoke(
+            new Api.messages.ReadHistory({
+              peer: entity,
+              maxId: Math.max(...messageIds),
+            })
+          );
+          markedCount = messageIds.length;
+        } else if (maxId) {
+          result = await this.client.invoke(
+            new Api.messages.ReadHistory({
+              peer: entity,
+              maxId: maxId,
+            })
+          );
+          markedCount = maxId;
+        } else {
+          // Mark all messages as read (get latest message ID first)
+          const messages = await this.client.getMessages(entity, { limit: 1 });
+          if (messages.length > 0) {
+            const latestMessageId = messages[0].id;
+            result = await this.client.invoke(
+              new Api.messages.ReadHistory({
+                peer: entity,
+                maxId: latestMessageId,
+              })
+            );
+            markedCount = latestMessageId;
+          } else {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    success: true,
+                    channel: channelTitle,
+                    message: "No messages to mark as read",
+                    markedCount: 0,
+                  }, null, 2),
+                },
+              ],
+            };
+          }
+        }
+      }
+
+      // Verify the operation by checking if it actually worked
+      let verificationMessage = "";
+      try {
+        // Get the dialog to check unread count after marking as read
+        const dialogs = await this.client.getDialogs({ limit: 100 });
+        const targetDialog = dialogs.find(d => d.entity && (d.entity as any).id === (entity as any).id);
+        
+        if (targetDialog) {
+          const unreadCountAfter = targetDialog.unreadCount || 0;
+          if (unreadCountAfter === 0) {
+            verificationMessage = " (Verified: No unread messages remaining)";
+          } else {
+            verificationMessage = ` (Note: ${unreadCountAfter} messages still show as unread)`;
+          }
+        }
+      } catch (verifyError) {
+        // Verification failed, but don't fail the whole operation
+        verificationMessage = " (Could not verify read status)";
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              channel: channelTitle,
+              entityType: entityType,
+              message: (messageIds 
+                ? `Marked ${messageIds.length} specific messages as read`
+                : maxId 
+                  ? `Marked all messages up to ID ${maxId} as read`
+                  : `Marked all messages as read (up to ID ${markedCount})`) + verificationMessage,
+              maxIdMarked: maxId || (messageIds ? Math.max(...messageIds) : markedCount),
+              specificMessageIds: messageIds || null,
+              apiMethod: apiMethod,
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new Error(`Failed to mark messages as read in ${channel}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async checkUnreadMessages(args: unknown): Promise<CallToolResult> {
+    const { limit, includeChannels, onlyWithUnread } = CheckUnreadMessagesSchema.parse(args);
+
+    if (!this.client) {
+      throw new Error("Telegram client not initialized");
+    }
+
+    try {
+      // Get dialogs (conversations) that the user has access to
+      const dialogs = await this.client.getDialogs({ limit });
+      
+      const chatsWithUnread = [];
+
+      for (const dialog of dialogs) {
+        const entity = dialog.entity;
+        
+        // Skip if entity is undefined
+        if (!entity) {
+          continue;
+        }
+        
+        // Skip channels unless specifically requested
+        if (!includeChannels && (entity as any).className === "Channel" && (entity as any).broadcast) {
+          continue;
+        }
+
+        // Get chat info
+        let chatType = "unknown";
+        let chatTitle = "Unknown";
+        let username = null;
+
+        if ((entity as any).className === "User") {
+          chatType = "private";
+          chatTitle = (entity as any).firstName || "Unknown User";
+          if ((entity as any).lastName) {
+            chatTitle += ` ${(entity as any).lastName}`;
+          }
+          username = (entity as any).username || null;
+        } else if ((entity as any).className === "Chat") {
+          chatType = "group";
+          chatTitle = (entity as any).title || "Unknown Group";
+        } else if ((entity as any).className === "Channel") {
+          if ((entity as any).broadcast) {
+            chatType = "channel";
+          } else {
+            chatType = "supergroup";
+          }
+          chatTitle = (entity as any).title || "Unknown Channel";
+          username = (entity as any).username || null;
+        }
+
+        const unreadCount = dialog.unreadCount || 0;
+        const hasUnreadMentions = dialog.unreadMentionsCount > 0;
+
+        // If onlyWithUnread is true, skip chats with no unread messages
+        if (onlyWithUnread && unreadCount === 0 && !hasUnreadMentions) {
+          continue;
+        }
+
+        const chatInfo = {
+          id: (entity as any).id.toString(),
+          title: chatTitle,
+          type: chatType,
+          username: username,
+          unreadCount: unreadCount,
+          unreadMentionsCount: dialog.unreadMentionsCount || 0,
+          hasUnread: unreadCount > 0 || hasUnreadMentions,
+          isArchived: dialog.archived || false,
+          isPinned: dialog.pinned || false,
+          lastMessageDate: dialog.date ? new Date(dialog.date * 1000).toISOString() : null,
+        };
+
+        chatsWithUnread.push(chatInfo);
+      }
+
+      // Sort by unread count (descending) and then by last message date
+      chatsWithUnread.sort((a, b) => {
+        if (a.unreadCount !== b.unreadCount) {
+          return b.unreadCount - a.unreadCount;
+        }
+        if (a.lastMessageDate && b.lastMessageDate) {
+          return new Date(b.lastMessageDate).getTime() - new Date(a.lastMessageDate).getTime();
+        }
+        return 0;
+      });
+
+      const totalUnreadChats = chatsWithUnread.filter(chat => chat.hasUnread).length;
+      const totalUnreadMessages = chatsWithUnread.reduce((sum, chat) => sum + chat.unreadCount, 0);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              summary: {
+                totalChatsChecked: dialogs.length,
+                totalUnreadChats: totalUnreadChats,
+                totalUnreadMessages: totalUnreadMessages,
+                includeChannels: includeChannels,
+                onlyWithUnread: onlyWithUnread,
+              },
+              chats: chatsWithUnread,
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new Error(`Failed to check unread messages: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async getPrivateMessages(args: unknown): Promise<CallToolResult> {
+    const { contact, limit, sinceMinutes, sinceHours, sinceDate } = GetPrivateMessagesSchema.parse(args);
+
+    if (!this.client) {
+      throw new Error("Telegram client not initialized");
+    }
+
+    try {
+      // Resolve contact entity - could be username, phone, or user ID
+      let entity;
+      try {
+        entity = await this.client.getEntity(contact);
+      } catch (error) {
+        throw new Error(`Could not find contact "${contact}". Make sure the username (@username), phone number (+1234567890), or user ID is correct and you have a conversation with this contact.`);
+      }
+
+      // Verify it's a private chat (User entity)
+      if ((entity as any).className !== "User") {
+        throw new Error(`"${contact}" is not a private chat. Use get_recent_messages for channels and groups.`);
+      }
+      
+      // Calculate cutoff date if time filtering is requested
+      const cutoffDate = this.calculateCutoffDate(sinceMinutes, sinceHours, sinceDate);
+      
+      // Get recent messages from the private conversation
+      const messages = await this.client.getMessages(entity, { limit: cutoffDate ? limit * 3 : limit });
+
+      let filteredMessages = messages.map((msg: any) => {
+        const date = new Date(msg.date * 1000);
+        
+        // Determine sender info
+        let sender = "Unknown";
+        let isOutgoing = false;
+        
+        if (msg.out) {
+          sender = "You";
+          isOutgoing = true;
+        } else {
+          // For incoming messages in private chat, it's from the contact
+          const firstName = (entity as any).firstName || "";
+          const lastName = (entity as any).lastName || "";
+          sender = `${firstName} ${lastName}`.trim() || (entity as any).username || "Contact";
+        }
+        
+        return {
+          id: msg.id,
+          date: date.toISOString(),
+          timestamp: msg.date,
+          sender,
+          isOutgoing,
+          text: msg.text || "[Media/Non-text message]",
+          messageType: msg.text ? "text" : "media",
+          replyToMsgId: msg.replyToMsgId || null,
+        };
+      });
+
+      // Apply time filtering if specified
+      if (cutoffDate) {
+        filteredMessages = filteredMessages.filter(msg => 
+          new Date(msg.timestamp * 1000) >= cutoffDate
+        );
+        // Limit after filtering
+        filteredMessages = filteredMessages.slice(0, limit);
+      }
+
+      const contactName = `${(entity as any).firstName || ""} ${(entity as any).lastName || ""}`.trim() 
+        || (entity as any).username 
+        || contact;
+
+      const result: any = {
+        success: true,
+        contact: contactName,
+        contactId: (entity as any).id.toString(),
+        contactUsername: (entity as any).username || null,
+        messageCount: filteredMessages.length,
+        messages: filteredMessages,
+        timeFilter: cutoffDate ? {
+          since: cutoffDate.toISOString(),
+          sinceMinutes,
+          sinceHours,
+          sinceDate,
+        } : null,
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new Error(`Failed to get private messages from ${contact}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

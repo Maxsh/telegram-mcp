@@ -107,10 +107,13 @@ Replace `/full/path/to/mcp-telegram-server/` with the actual full path to your p
 
 Refer to your MCP client's documentation for configuration. The server communicates via stdio and provides the following tools:
 
-- `get_recent_messages`: Get recent messages from a channel
-- `get_channel_info`: Get information about a channel
-- `search_messages`: Search for messages in a channel
+- `get_recent_messages`: Get recent messages from channels, groups, or private chats
+- `get_private_messages`: Get messages from private conversations with enhanced formatting
+- `get_channel_info`: Get information about channels, groups, or private chats
+- `search_messages`: Search for messages in channels, groups, or private chats
 - `get_available_channels`: List all available channels and groups
+- `mark_messages_read`: Mark messages as read in groups/supergroups/private chats (not broadcast channels)
+- `check_unread_messages`: Check for unread messages in private chats and groups
 
 ## Step 8: Usage Examples
 
@@ -121,12 +124,33 @@ Once configured, you can use the following prompts with your MCP client:
 
 2. **Get recent messages:**
    "Get the 20 most recent messages from @examplechannel"
+   "Get messages from @examplechannel from the last 30 minutes"
+   "Get messages from @examplechannel from the last 2 hours"
+   "Get recent messages from my conversation with @username"
 
-2. **Search messages:**
+3. **Get private messages:**
+   "Get my recent conversation with @username"
+   "Show me the last 15 messages from +1234567890"
+   "Get private messages from @contact from the last hour"
+
+4. **Search messages:**
    "Search for messages containing 'announcement' in @examplechannel"
+   "Search for 'update' messages in @examplechannel from the last hour"
+   "Search for 'meeting' in my chat with @username"
 
-3. **Get channel info:**
+5. **Get chat info:**
    "Get information about @examplechannel"
+   "Get information about my conversation with @username"
+
+6. **Mark messages as read (groups and private chats):**
+   "Mark all messages as read in @examplegroup"
+   "Mark messages with IDs 123, 124, 125 as read in @examplegroup"
+   "Mark all messages as read in my chat with @username"
+
+7. **Check for unread messages:**
+   "Check for unread messages in my chats"
+   "Show me all chats with unread messages"
+   "Check unread messages including channels"
 
 ## Troubleshooting
 

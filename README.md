@@ -1,13 +1,16 @@
 # MCP Telegram Server
 
-A Model Context Protocol (MCP) server that provides tools for interacting with Telegram channels on behalf of a user. This server allows MCP clients to retrieve recent messages, search messages, and get channel information.
+A Model Context Protocol (MCP) server that provides tools for interacting with Telegram channels, groups, and private conversations on behalf of a user. This server allows MCP clients to retrieve recent messages, search messages, get chat information, and manage conversations.
 
 ## Features
 
-- **Get Recent Messages**: Retrieve the most recent messages from a Telegram channel
-- **Search Messages**: Search for specific content within a channel's messages
-- **Get Channel Info**: Retrieve metadata and information about a Telegram channel
+- **Get Recent Messages**: Retrieve the most recent messages from channels, groups, or private chats
+- **Get Private Messages**: Dedicated tool for reading private conversation messages with enhanced formatting
+- **Search Messages**: Search for specific content within channels, groups, or private conversations
+- **Get Chat Info**: Retrieve metadata and information about any Telegram chat (channels, groups, private)
 - **Get Available Channels**: List all channels and groups that the user has access to
+- **Mark Messages as Read**: Mark specific messages or all messages as read in conversations
+- **Check Unread Messages**: Find chats with unread messages in private conversations and groups
 - **User Authentication**: Works on behalf of the authenticated user (not bot tokens)
 
 ## Prerequisites
@@ -91,13 +94,18 @@ The server communicates via stdio and can be used with any MCP client.
 
 #### 1. get_recent_messages
 
-Retrieves recent messages from a Telegram channel.
+Retrieves recent messages from a Telegram channel, group, or private chat.
 
 **Parameters:**
-- `channel` (string, required): Channel username (e.g., "@channelname") or channel ID
+- `channel` (string, required): Channel username (@channelname), group username, private chat username (@username), phone number (+1234567890), or chat ID
 - `limit` (number, optional): Number of messages to retrieve (default: 10, max: 100)
+- `sinceMinutes` (number, optional): Get messages from the last N minutes
+- `sinceHours` (number, optional): Get messages from the last N hours
+- `sinceDate` (string, optional): Get messages since this date (ISO format: 2023-12-01T10:00:00Z)
 
-**Example:**
+**Examples:**
+
+Get 20 most recent messages from a channel:
 ```json
 {
   "name": "get_recent_messages",
@@ -108,14 +116,84 @@ Retrieves recent messages from a Telegram channel.
 }
 ```
 
-#### 2. get_channel_info
+Get messages from a private chat:
+```json
+{
+  "name": "get_recent_messages",
+  "arguments": {
+    "channel": "@username",
+    "limit": 15
+  }
+}
+```
 
-Retrieves information about a Telegram channel.
+Get messages from the last 30 minutes:
+```json
+{
+  "name": "get_recent_messages",
+  "arguments": {
+    "channel": "@examplechannel",
+    "sinceMinutes": 30
+  }
+}
+```
+
+#### 2. get_private_messages
+
+Dedicated tool for retrieving messages from private chat conversations with enhanced formatting.
 
 **Parameters:**
-- `channel` (string, required): Channel username or channel ID
+- `contact` (string, required): Contact identifier: username (@username), phone number (+1234567890), or user ID
+- `limit` (number, optional): Number of messages to retrieve (default: 10, max: 100)
+- `sinceMinutes` (number, optional): Get messages from the last N minutes
+- `sinceHours` (number, optional): Get messages from the last N hours
+- `sinceDate` (string, optional): Get messages since this date (ISO format: 2023-12-01T10:00:00Z)
 
-**Example:**
+**Examples:**
+
+Get messages from a private chat by username:
+```json
+{
+  "name": "get_private_messages",
+  "arguments": {
+    "contact": "@username",
+    "limit": 20
+  }
+}
+```
+
+Get messages from a contact by phone number:
+```json
+{
+  "name": "get_private_messages",
+  "arguments": {
+    "contact": "+1234567890",
+    "limit": 10
+  }
+}
+```
+
+Get recent private messages from the last hour:
+```json
+{
+  "name": "get_private_messages",
+  "arguments": {
+    "contact": "@username",
+    "sinceHours": 1
+  }
+}
+```
+
+#### 3. get_channel_info
+
+Retrieves information about a Telegram channel, group, or private chat.
+
+**Parameters:**
+- `channel` (string, required): Channel username (@channelname), group username, private chat username (@username), phone number (+1234567890), or chat ID
+
+**Examples:**
+
+Get channel information:
 ```json
 {
   "name": "get_channel_info",
@@ -125,16 +203,31 @@ Retrieves information about a Telegram channel.
 }
 ```
 
-#### 3. search_messages
+Get private chat information:
+```json
+{
+  "name": "get_channel_info",
+  "arguments": {
+    "channel": "@username"
+  }
+}
+```
 
-Searches for messages containing specific text in a channel.
+#### 4. search_messages
+
+Searches for messages containing specific text in a channel, group, or private chat.
 
 **Parameters:**
-- `channel` (string, required): Channel username or channel ID
+- `channel` (string, required): Channel username (@channelname), group username, private chat username (@username), phone number (+1234567890), or chat ID
 - `query` (string, required): Search query
 - `limit` (number, optional): Number of results (default: 10, max: 100)
+- `sinceMinutes` (number, optional): Search messages from the last N minutes
+- `sinceHours` (number, optional): Search messages from the last N hours
+- `sinceDate` (string, optional): Search messages since this date (ISO format: 2023-12-01T10:00:00Z)
 
-**Example:**
+**Examples:**
+
+Search in a channel:
 ```json
 {
   "name": "search_messages",
@@ -146,7 +239,31 @@ Searches for messages containing specific text in a channel.
 }
 ```
 
-#### 4. get_available_channels
+Search in a private chat:
+```json
+{
+  "name": "search_messages",
+  "arguments": {
+    "channel": "@username",
+    "query": "meeting",
+    "limit": 10
+  }
+}
+```
+
+Search messages from the last hour:
+```json
+{
+  "name": "search_messages",
+  "arguments": {
+    "channel": "@examplechannel",
+    "query": "update",
+    "sinceHours": 1
+  }
+}
+```
+
+#### 5. get_available_channels
 
 Lists all channels and groups that the user has access to.
 
@@ -161,6 +278,94 @@ Lists all channels and groups that the user has access to.
   "arguments": {
     "limit": 100,
     "includeGroups": true
+  }
+}
+```
+
+#### 6. mark_messages_read
+
+Mark messages as read in a Telegram chat, group, or private conversation.
+
+**Parameters:**
+- `channel` (string, required): Channel username, group username, private chat username (@username), phone number (+1234567890), or chat ID
+- `messageIds` (array of numbers, optional): Specific message IDs to mark as read
+- `maxId` (number, optional): Mark all messages up to this message ID as read
+
+**Important Note:** This feature works with **groups, supergroups, and private chats**. Broadcast channels don't support read status operations due to Telegram API limitations.
+
+**Examples:**
+
+Mark specific messages as read in a group:
+```json
+{
+  "name": "mark_messages_read",
+  "arguments": {
+    "channel": "@examplegroup",
+    "messageIds": [123, 124, 125]
+  }
+}
+```
+
+Mark messages as read in a private chat:
+```json
+{
+  "name": "mark_messages_read",
+  "arguments": {
+    "channel": "@username"
+  }
+}
+```
+
+Mark all messages up to a specific ID as read:
+```json
+{
+  "name": "mark_messages_read",
+  "arguments": {
+    "channel": "@examplegroup",
+    "maxId": 150
+  }
+}
+```
+
+#### 7. check_unread_messages
+
+Check for unread messages in private chats and groups.
+
+**Parameters:**
+- `limit` (number, optional): Number of chats to check (default: 50, max: 200)
+- `includeChannels` (boolean, optional): Include channels in addition to private chats and groups (default: false)
+- `onlyWithUnread` (boolean, optional): Only return chats with unread messages (default: true)
+
+**Examples:**
+
+Check for unread messages in private chats and groups:
+```json
+{
+  "name": "check_unread_messages",
+  "arguments": {
+    "limit": 100
+  }
+}
+```
+
+Include channels and show all chats (even with no unread messages):
+```json
+{
+  "name": "check_unread_messages",
+  "arguments": {
+    "limit": 50,
+    "includeChannels": true,
+    "onlyWithUnread": false
+  }
+}
+```
+
+Check only chats with unread messages:
+```json
+{
+  "name": "check_unread_messages",
+  "arguments": {
+    "onlyWithUnread": true
   }
 }
 ```
