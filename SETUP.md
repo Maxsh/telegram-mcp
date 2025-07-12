@@ -110,12 +110,16 @@ Refer to your MCP client's documentation for configuration. The server communica
 - `get_recent_messages`: Get recent messages from a channel
 - `get_channel_info`: Get information about a channel
 - `search_messages`: Search for messages in a channel
+- `get_available_channels`: List all available channels and groups
 
 ## Step 8: Usage Examples
 
 Once configured, you can use the following prompts with your MCP client:
 
-1. **Get recent messages:**
+1. **Get available channels:**
+   "Show me all the channels I have access to"
+
+2. **Get recent messages:**
    "Get the 20 most recent messages from @examplechannel"
 
 2. **Search messages:**

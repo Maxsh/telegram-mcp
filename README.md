@@ -7,6 +7,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with T
 - **Get Recent Messages**: Retrieve the most recent messages from a Telegram channel
 - **Search Messages**: Search for specific content within a channel's messages
 - **Get Channel Info**: Retrieve metadata and information about a Telegram channel
+- **Get Available Channels**: List all channels and groups that the user has access to
 - **User Authentication**: Works on behalf of the authenticated user (not bot tokens)
 
 ## Prerequisites
@@ -141,6 +142,25 @@ Searches for messages containing specific text in a channel.
     "channel": "@examplechannel",
     "query": "important announcement",
     "limit": 15
+  }
+}
+```
+
+#### 4. get_available_channels
+
+Lists all channels and groups that the user has access to.
+
+**Parameters:**
+- `limit` (number, optional): Number of channels to retrieve (default: 50, max: 200)
+- `includeGroups` (boolean, optional): Include groups in addition to channels (default: false)
+
+**Example:**
+```json
+{
+  "name": "get_available_channels",
+  "arguments": {
+    "limit": 100,
+    "includeGroups": true
   }
 }
 ```

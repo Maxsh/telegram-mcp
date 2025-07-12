@@ -20,13 +20,21 @@ async function generateSession() {
     console.log("Telegram Session Generator");
     console.log("=========================\n");
 
-    const apiId = await question("Enter your API ID: ");
-    const apiHash = await question("Enter your API Hash: ");
+    // Get API credentials from environment variables
+    const apiId = process.env.TELEGRAM_API_ID;
+    const apiHash = process.env.TELEGRAM_API_HASH;
 
     if (!apiId || !apiHash) {
-      console.error("API ID and API Hash are required!");
+      console.error("❌ TELEGRAM_API_ID and TELEGRAM_API_HASH environment variables are required!");
+      console.error("Please set them in your .env file or export them in your shell:");
+      console.error("  export TELEGRAM_API_ID=your_api_id");
+      console.error("  export TELEGRAM_API_HASH=your_api_hash");
       process.exit(1);
     }
+
+    console.log(`✅ Using API ID: ${apiId}`);
+    console.log(`✅ Using API Hash: ${apiHash.substring(0, 8)}...`);
+    console.log();
 
     const session = new StringSession("");
     const client = new TelegramClient(session, parseInt(apiId), apiHash, {

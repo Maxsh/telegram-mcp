@@ -29,6 +29,11 @@ const SearchMessagesSchema = z.object({
   limit: z.number().optional().default(10).describe("Number of messages to retrieve (default: 10, max: 100)"),
 });
 
+const GetAvailableChannelsSchema = z.object({
+  limit: z.number().optional().default(50).describe("Number of channels to retrieve (default: 50, max: 200)"),
+  includeGroups: z.boolean().optional().default(false).describe("Include groups in addition to channels (default: false)"),
+});
+
 class TelegramMCPServer {
   private server: Server;
   private client: TelegramClient | null = null;
@@ -145,6 +150,28 @@ class TelegramMCPServer {
               required: ["channel", "query"],
             },
           },
+          {
+            name: "get_available_channels",
+            description: "Get list of available channels and groups that the user has access to",
+            inputSchema: {
+              type: "object",
+              properties: {
+                limit: {
+                  type: "number",
+                  description: "Number of channels to retrieve (default: 50, max: 200)",
+                  default: 50,
+                  minimum: 1,
+                  maximum: 200,
+                },
+                includeGroups: {
+                  type: "boolean",
+                  description: "Include groups in addition to channels (default: false)",
+                  default: false,
+                },
+              },
+              required: [],
+            },
+          },
         ] as Tool[],
       };
     });
@@ -164,6 +191,8 @@ class TelegramMCPServer {
             return await this.getChannelInfo(args);
           case "search_messages":
             return await this.searchMessages(args);
+          case "get_available_channels":
+            return await this.getAvailableChannels(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -317,6 +346,76 @@ class TelegramMCPServer {
       };
     } catch (error) {
       throw new Error(`Failed to search messages in channel ${channel}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async getAvailableChannels(args: unknown): Promise<CallToolResult> {
+    const { limit, includeGroups } = GetAvailableChannelsSchema.parse(args);
+
+    if (!this.client) {
+      throw new Error("Telegram client not initialized");
+    }
+
+    try {
+      // Get all dialogs (conversations)
+      const dialogs = await this.client.getDialogs({ limit });
+
+      const channels: any[] = [];
+
+      for (const dialog of dialogs) {
+        const entity = dialog.entity;
+        
+        // Check if entity exists and is a channel or supergroup
+        if (entity && (entity as any).className === "Channel") {
+          const isChannel = (entity as any).broadcast;
+          const isGroup = (entity as any).megagroup;
+          
+          // Include channels always, groups only if requested
+          if (isChannel || (includeGroups && isGroup)) {
+            const channelInfo: any = {
+              id: (entity as any).id?.toString(),
+              title: (entity as any).title,
+              username: (entity as any).username ? `@${(entity as any).username}` : null,
+              type: isChannel ? "channel" : "group",
+              participantsCount: (entity as any).participantsCount || 0,
+              isPrivate: !(entity as any).username,
+              accessHash: (entity as any).accessHash?.toString(),
+              // Additional useful info
+              verified: (entity as any).verified || false,
+              scam: (entity as any).scam || false,
+              fake: (entity as any).fake || false,
+              restricted: (entity as any).restricted || false,
+            };
+
+            // Add description if available
+            if ((entity as any).about) {
+              channelInfo.description = (entity as any).about;
+            }
+
+            channels.push(channelInfo);
+          }
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              totalFound: channels.length,
+              includeGroups,
+              channels: channels.sort((a, b) => {
+                // Sort by title, putting channels with usernames first
+                if (a.username && !b.username) return -1;
+                if (!a.username && b.username) return 1;
+                return a.title.localeCompare(b.title);
+              }),
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new Error(`Failed to get available channels: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
