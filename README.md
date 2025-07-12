@@ -11,6 +11,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with T
 - **Get Available Channels**: List all channels and groups that the user has access to
 - **Mark Messages as Read**: Mark specific messages or all messages as read in conversations
 - **Check Unread Messages**: Find chats with unread messages in private conversations and groups
+- **Get Chat Status**: Diagnostic tool to check read status and chat capabilities
 - **User Authentication**: Works on behalf of the authenticated user (not bot tokens)
 
 ## Prerequisites
@@ -370,6 +371,37 @@ Check only chats with unread messages:
 }
 ```
 
+#### 8. get_chat_status
+
+Get detailed status information about a chat including unread count, read status, and diagnostic information.
+
+**Parameters:**
+- `chat` (string, required): Chat identifier: username (@username), phone number (+1234567890), or chat ID
+
+**Examples:**
+
+Get status of a private chat:
+```json
+{
+  "name": "get_chat_status",
+  "arguments": {
+    "chat": "@username"
+  }
+}
+```
+
+Get status of a group:
+```json
+{
+  "name": "get_chat_status",
+  "arguments": {
+    "chat": "@groupname"
+  }
+}
+```
+
+**Note:** This tool is particularly useful for debugging read status issues and understanding why `mark_messages_read` might not work as expected.
+
 ## MCP Client Configuration
 
 To use this server with an MCP client, add it to your client configuration:
@@ -421,6 +453,26 @@ npm run watch
 2. **Channel Access**: Ensure your account has access to the channels you're trying to read.
 3. **API Limits**: If you encounter rate limits, wait before making more requests.
 4. **Network Issues**: The server includes connection retry logic, but network issues may still cause failures.
+5. **Mark Messages Read Issues**: 
+   - If `mark_messages_read` returns success but messages aren't actually marked as read, use `get_chat_status` to debug
+   - Some private chats may have restrictions on read status operations
+   - Encrypted chats (secret chats) don't support read status marking via API
+   - The function works best with regular groups and supergroups
+
+### Debugging Read Status Issues
+
+If `mark_messages_read` isn't working:
+
+1. **Check chat status first:**
+   ```
+   "Get status information for my chat with @username"
+   ```
+
+2. **Verify chat type:** The tool shows whether the chat supports read status operations
+
+3. **Check unread count:** Use `check_unread_messages` to see if the operation actually worked
+
+4. **Try different approaches:** The server automatically tries multiple API methods for private chats
 
 ## License
 

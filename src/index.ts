@@ -60,6 +60,10 @@ const GetPrivateMessagesSchema = z.object({
   sinceDate: z.string().optional().describe("Get messages since this date (ISO format: 2023-12-01T10:00:00Z)"),
 });
 
+const GetChatStatusSchema = z.object({
+  chat: z.string().describe("Chat identifier: username (@username), phone number (+1234567890), or chat ID"),
+});
+
 class TelegramMCPServer {
   private server: Server;
   private client: TelegramClient | null = null;
@@ -326,6 +330,20 @@ class TelegramMCPServer {
               required: ["contact"],
             },
           },
+          {
+            name: "get_chat_status",
+            description: "Get detailed status information about a chat including unread count and read status",
+            inputSchema: {
+              type: "object",
+              properties: {
+                chat: {
+                  type: "string",
+                  description: "Chat identifier: username (@username), phone number (+1234567890), or chat ID",
+                },
+              },
+              required: ["chat"],
+            },
+          },
         ] as Tool[],
       };
     });
@@ -353,6 +371,8 @@ class TelegramMCPServer {
             return await this.checkUnreadMessages(args);
           case "get_private_messages":
             return await this.getPrivateMessages(args);
+          case "get_chat_status":
+            return await this.getChatStatus(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -1071,6 +1091,96 @@ class TelegramMCPServer {
       };
     } catch (error) {
       throw new Error(`Failed to get private messages from ${contact}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async getChatStatus(args: unknown): Promise<CallToolResult> {
+    const { chat } = GetChatStatusSchema.parse(args);
+
+    if (!this.client) {
+      throw new Error("Telegram client not initialized");
+    }
+
+    try {
+      // Resolve chat entity
+      const entity = await this.client.getEntity(chat);
+      const entityType = (entity as any).className;
+      
+      // Get dialog info to check unread status
+      const dialogs = await this.client.getDialogs({ limit: 100 });
+      const targetDialog = dialogs.find(d => d.entity && (d.entity as any).id === (entity as any).id);
+      
+      // Get recent messages to see read status
+      const recentMessages = await this.client.getMessages(entity, { limit: 5 });
+      
+      let chatTitle = "Unknown";
+      if (entityType === "User") {
+        const firstName = (entity as any).firstName || "";
+        const lastName = (entity as any).lastName || "";
+        chatTitle = `${firstName} ${lastName}`.trim() || (entity as any).username || "Unknown User";
+      } else {
+        chatTitle = (entity as any).title || "Unknown Chat";
+      }
+
+      const statusInfo = {
+        success: true,
+        chat: chatTitle,
+        chatId: (entity as any).id.toString(),
+        entityType: entityType,
+        username: (entity as any).username || null,
+        
+        // Dialog information
+        dialogInfo: targetDialog ? {
+          unreadCount: targetDialog.unreadCount || 0,
+          unreadMentionsCount: targetDialog.unreadMentionsCount || 0,
+          isPinned: targetDialog.pinned || false,
+          isArchived: targetDialog.archived || false,
+          lastMessageDate: targetDialog.date ? new Date(targetDialog.date * 1000).toISOString() : null,
+          lastMessageId: (targetDialog as any).topMessage || null,
+        } : null,
+        
+        // Recent messages with read status
+        recentMessages: recentMessages.map((msg: any) => ({
+          id: msg.id,
+          date: new Date(msg.date * 1000).toISOString(),
+          text: (msg.text || "[Media/Non-text message]").substring(0, 100) + (msg.text && msg.text.length > 100 ? "..." : ""),
+          isOutgoing: msg.out || false,
+          readDate: msg.readDate ? new Date(msg.readDate * 1000).toISOString() : null,
+          // Note: msg.readDate might not always be available for private chats
+        })),
+        
+        // Chat-specific capabilities
+        capabilities: {
+          canMarkAsRead: entityType !== "Channel" || !(entity as any).broadcast,
+          isPrivateChat: entityType === "User",
+          isGroup: entityType === "Chat",
+          isSupergroup: entityType === "Channel" && !(entity as any).broadcast,
+          isBroadcastChannel: entityType === "Channel" && (entity as any).broadcast,
+        },
+        
+        // Debugging info
+        debug: {
+          dialogFound: !!targetDialog,
+          totalDialogsChecked: dialogs.length,
+          entityProperties: {
+            id: (entity as any).id,
+            accessHash: (entity as any).accessHash || null,
+            className: entityType,
+            broadcast: (entity as any).broadcast || false,
+          }
+        }
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(statusInfo, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new Error(`Failed to get chat status for ${chat}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
