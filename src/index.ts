@@ -1,5 +1,22 @@
 #!/usr/bin/env node
 
+// Suppress all console output to prevent JSON corruption in MCP communication
+const originalConsole = console;
+console.log = () => {};
+console.warn = () => {};
+console.info = () => {};
+console.debug = () => {};
+console.trace = () => {};
+// Keep console.error suppressed except for critical errors
+const originalError = console.error;
+console.error = () => {};
+
+// Suppress process warnings and set environment variables to disable logging
+process.removeAllListeners('warning');
+process.env.NODE_NO_WARNINGS = '1';
+process.env.TELEGRAM_CLIENT_LOGGER_DISABLED = '1';
+process.env.DEBUG = '';
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -146,7 +163,7 @@ class TelegramMCPServer {
         await this.client.getMe();
         return; // Successfully connected with existing session
       } catch (error) {
-        console.error("Failed to connect with existing session:", error);
+        // Failed to connect with existing session - console.error removed to prevent JSON corruption
         // Clear the invalid dynamic session and continue to require authorization
         this.dynamicSession = null;
         if (this.client) {
@@ -192,13 +209,13 @@ class TelegramMCPServer {
   private setupProcessCleanup(): void {
     // Handle uncaught exceptions
     process.on('uncaughtException', (error) => {
-      console.error('Uncaught exception:', error);
+      // Uncaught exception - console.error removed to prevent JSON corruption
       this.cleanup().then(() => process.exit(1)).catch(() => process.exit(1));
     });
 
     // Handle unhandled promise rejections
     process.on('unhandledRejection', (reason, promise) => {
-      console.error('Unhandled rejection at:', promise, 'reason:', reason);
+      // Unhandled rejection - console.error removed to prevent JSON corruption
       this.cleanup().then(() => process.exit(1)).catch(() => process.exit(1));
     });
   }
@@ -213,10 +230,10 @@ class TelegramMCPServer {
       // Only logout if using dynamic session (not environment-based)
       if (this.isDynamicSession()) {
         const result = await this.telegramLogout({});
-        console.error('Cleanup logout result:', result);
+        // Cleanup logout result - console.error removed to prevent JSON corruption
       }
     } catch (error) {
-      console.error('Error during cleanup:', error);
+      // Error during cleanup - console.error removed to prevent JSON corruption
     }
   }
 
@@ -233,7 +250,7 @@ class TelegramMCPServer {
     // Only set timeout for dynamic sessions
     if (this.isDynamicSession()) {
       this.sessionTimeout = setTimeout(async () => {
-        console.error('Session timeout reached, logging out...');
+        // Session timeout reached - console.error removed to prevent JSON corruption
         await this.cleanup();
       }, this.SESSION_TIMEOUT_MS);
     }
@@ -963,7 +980,7 @@ class TelegramMCPServer {
           }
         } catch (readHistoryError) {
           // If ReadHistory fails for private chat, try alternative approach
-          console.error("ReadHistory failed for private chat, trying alternative approach:", readHistoryError);
+          // ReadHistory failed - console.error removed to prevent JSON corruption
           
           throw new Error(`Could not mark messages as read in private chat. This might be due to chat encryption or API restrictions. Error: ${readHistoryError instanceof Error ? readHistoryError.message : String(readHistoryError)}`);
         }
@@ -1626,7 +1643,7 @@ class TelegramMCPServer {
         
         // Disconnect the client
         await this.client.disconnect();
-        console.error("Telegram session logged out and disconnected");
+        // Telegram session logged out and disconnected - console.error removed to prevent JSON corruption
       }
 
       // Clear the dynamic session
@@ -1674,18 +1691,18 @@ class TelegramMCPServer {
     
     // Monitor transport for disconnection
     transport.onclose = () => {
-      console.error("MCP transport disconnected, cleaning up...");
+      // MCP transport disconnected - console.error removed to prevent JSON corruption
       this.cleanup().then(() => {
-        console.error("Cleanup completed, exiting process...");
+        // Cleanup completed - console.error removed to prevent JSON corruption
         process.exit(0);
       }).catch((error) => {
-        console.error("Cleanup failed:", error);
+        // Cleanup failed - console.error removed to prevent JSON corruption
         process.exit(1);
       });
     };
 
     await this.server.connect(transport);
-    console.error("Telegram MCP Server running on stdio");
+    // Telegram MCP Server running on stdio - console.error removed to prevent JSON corruption
     
     // Start session timeout for dynamic sessions
     this.resetSessionTimeout();
@@ -1697,23 +1714,23 @@ const server = new TelegramMCPServer();
 
 // Enhanced cleanup on process exit
 process.on('exit', async () => {
-  console.error('Process exiting, cleaning up...');
+  // Process exiting - console.error removed to prevent JSON corruption
   await server.cleanup();
 });
 
 process.on('SIGINT', async () => {
-  console.error('Received SIGINT, cleaning up...');
+  // Received SIGINT - console.error removed to prevent JSON corruption
   await server.cleanup();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  console.error('Received SIGTERM, cleaning up...');
+  // Received SIGTERM - console.error removed to prevent JSON corruption
   await server.cleanup();
   process.exit(0);
 });
 
 server.start().catch((error) => {
-  console.error("Failed to start server:", error);
+  // Failed to start server - console.error removed to prevent JSON corruption
   process.exit(1);
 });
