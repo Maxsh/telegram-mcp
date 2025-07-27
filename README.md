@@ -4,6 +4,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with T
 
 ## Features
 
+- **Dynamic Authorization**: Interactive authentication when no session is provided
 - **Get Recent Messages**: Retrieve the most recent messages from channels, groups, or private chats
 - **Get Private Messages**: Dedicated tool for reading private conversation messages with enhanced formatting
 - **Search Messages**: Search for specific content within channels, groups, or private conversations
@@ -12,6 +13,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with T
 - **Mark Messages as Read**: Mark specific messages or all messages as read in conversations
 - **Check Unread Messages**: Find chats with unread messages in private conversations and groups
 - **Get Chat Status**: Diagnostic tool to check read status and chat capabilities
+- **Session Management**: Automatic logout and session invalidation support
 - **User Authentication**: Works on behalf of the authenticated user (not bot tokens)
 
 ## Prerequisites
@@ -21,7 +23,9 @@ A Model Context Protocol (MCP) server that provides tools for interacting with T
    - Log in with your phone number
    - Create a new application to get `api_id` and `api_hash`
 
-2. **User Session**: You need to generate a session string for user authentication (see setup instructions below)
+2. **User Session (Optional)**: You can either:
+   - Generate a session string for automatic authentication (see setup instructions below)
+   - Use interactive authentication when first using the server (recommended for ease of use)
 
 ## Installation
 
@@ -44,10 +48,25 @@ Create a `.env` file or set the following environment variables:
 ```bash
 export TELEGRAM_API_ID="your_api_id"
 export TELEGRAM_API_HASH="your_api_hash"
+# Optional: Set session for automatic authentication
 export TELEGRAM_SESSION="your_session_string"
 ```
 
-### 2. Generate Session String
+**Note**: If `TELEGRAM_SESSION` is not set, you'll be prompted to authenticate interactively when first using any Telegram function.
+
+### 2. Authentication Options
+
+#### Option A: Interactive Authentication (Recommended)
+
+Simply start using any Telegram function and you'll be prompted to authenticate:
+
+1. **Start Authorization**: Use any Telegram tool and you'll get an authorization prompt, or use `telegram_authorize` directly
+2. **Verify Code**: Use `telegram_verify_code` with the code sent to your phone
+3. **2FA (if enabled)**: Include your 2FA password in the verify_code call
+
+#### Option B: Pre-generated Session String
+
+### 2. Generate Session String (Optional)
 
 To generate a session string, you can create a simple script:
 
@@ -402,6 +421,83 @@ Get status of a group:
 
 **Note:** This tool is particularly useful for debugging read status issues and understanding why `mark_messages_read` might not work as expected.
 
+#### 9. telegram_authorize
+
+Start the interactive Telegram authorization process.
+
+**Parameters:**
+- `phoneNumber` (string, required): Phone number with country code (e.g., +1234567890)
+
+**Example:**
+```json
+{
+  "name": "telegram_authorize",
+  "arguments": {
+    "phoneNumber": "+1234567890"
+  }
+}
+```
+
+#### 10. telegram_verify_code
+
+Complete the authorization process with verification code and optional 2FA password.
+
+**Parameters:**
+- `code` (string, required): Verification code sent to your phone
+- `password` (string, optional): 2FA password (if enabled on your account)
+
+**Examples:**
+
+Basic verification:
+```json
+{
+  "name": "telegram_verify_code",
+  "arguments": {
+    "code": "12345"
+  }
+}
+```
+
+With 2FA password:
+```json
+{
+  "name": "telegram_verify_code",
+  "arguments": {
+    "code": "12345",
+    "password": "your_2fa_password"
+  }
+}
+```
+
+#### 11. telegram_logout
+
+Logout from Telegram and invalidate the current session.
+
+**Example:**
+```json
+{
+  "name": "telegram_logout",
+  "arguments": {}
+}
+```
+
+## Authentication Workflow
+
+### Interactive Authentication (No TELEGRAM_SESSION set)
+
+1. **First Use**: When you first try to use any Telegram function, you'll get an authorization prompt
+2. **Phone Number**: Use `telegram_authorize` with your phone number
+3. **Verification**: Use `telegram_verify_code` with the code sent to your phone
+4. **2FA (if needed)**: Include your 2FA password in the verification step
+5. **Session Storage**: The session is stored in memory for the duration of the MCP server session
+6. **Logout**: Use `telegram_logout` to invalidate the session, or it will be lost when the server restarts
+
+### Pre-configured Authentication (TELEGRAM_SESSION set)
+
+1. **Automatic**: If `TELEGRAM_SESSION` environment variable is set, authentication is automatic
+2. **No Prompts**: No need for interactive authorization
+3. **Persistent**: Session persists across server restarts
+
 ## MCP Client Configuration
 
 To use this server with an MCP client, add it to your client configuration:
@@ -449,7 +545,9 @@ npm run watch
 
 ## Troubleshooting
 
-1. **Authentication Errors**: Make sure your session string is valid and not expired.
+1. **Authentication Errors**: 
+   - If using interactive auth: Use `telegram_authorize` first, then `telegram_verify_code`
+   - If using TELEGRAM_SESSION: Make sure your session string is valid and not expired
 2. **Channel Access**: Ensure your account has access to the channels you're trying to read.
 3. **API Limits**: If you encounter rate limits, wait before making more requests.
 4. **Network Issues**: The server includes connection retry logic, but network issues may still cause failures.
@@ -458,6 +556,25 @@ npm run watch
    - Some private chats may have restrictions on read status operations
    - Encrypted chats (secret chats) don't support read status marking via API
    - The function works best with regular groups and supergroups
+6. **Session Issues**:
+   - Interactive sessions are stored in memory and lost when the server restarts
+   - For persistent sessions, set the TELEGRAM_SESSION environment variable
+   - Use `telegram_logout` to clear the session if you encounter auth issues
+
+### Authorization Troubleshooting
+
+**"Authorization required" errors:**
+1. Use `telegram_authorize` with your phone number
+2. Use `telegram_verify_code` with the code from SMS
+3. If you have 2FA, include your password in step 2
+
+**"Invalid verification code":**
+- Make sure you're entering the exact code from SMS
+- Codes expire after a few minutes - request a new one if needed
+
+**"2FA password required":**
+- Include the `password` parameter in `telegram_verify_code`
+- Make sure you're using your 2FA password, not your regular account password
 
 ### Debugging Read Status Issues
 

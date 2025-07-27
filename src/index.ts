@@ -12,6 +12,7 @@ import { z } from "zod";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import { Api } from "telegram/tl/index.js";
+import { computeCheck } from "telegram/Password.js";
 
 // Validation schemas
 const GetRecentMessagesSchema = z.object({
@@ -64,12 +65,38 @@ const GetChatStatusSchema = z.object({
   chat: z.string().describe("Chat identifier: username (@username), phone number (+1234567890), or chat ID"),
 });
 
+const AuthorizeSchema = z.object({
+  phoneNumber: z.string().describe("Phone number with country code (e.g., +1234567890)"),
+});
+
+const VerifyCodeSchema = z.object({
+  code: z.string().describe("Verification code sent to your phone"),
+  password: z.string().optional().describe("2FA password (if enabled on your account)"),
+});
+
+const LogoutSchema = z.object({});
+
 class TelegramMCPServer {
   private server: Server;
   private client: TelegramClient | null = null;
   private session: StringSession;
+  private isAuthorizing: boolean = false;
+  private authorizationInProgress: boolean = false;
+  private dynamicSession: string | null = null;
+  private apiId: string;
+  private apiHash: string;
+  private sessionTimeout: NodeJS.Timeout | null = null;
+  private readonly SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
   constructor() {
+    // Initialize API credentials
+    this.apiId = process.env.TELEGRAM_API_ID || "";
+    this.apiHash = process.env.TELEGRAM_API_HASH || "";
+    
+    if (!this.apiId || !this.apiHash) {
+      throw new Error("TELEGRAM_API_ID and TELEGRAM_API_HASH environment variables are required");
+    }
+
     this.server = new Server(
       {
         name: "telegram-server",
@@ -84,6 +111,7 @@ class TelegramMCPServer {
 
     this.session = new StringSession("");
     this.setupHandlers();
+    this.setupProcessCleanup();
   }
 
   private calculateCutoffDate(sinceMinutes?: number, sinceHours?: number, sinceDate?: string): Date | null {
@@ -100,32 +128,114 @@ class TelegramMCPServer {
   }
 
   private async initializeTelegramClient(): Promise<void> {
-    const apiId = process.env.TELEGRAM_API_ID;
-    const apiHash = process.env.TELEGRAM_API_HASH;
-    const sessionString = process.env.TELEGRAM_SESSION;
-
-    if (!apiId || !apiHash) {
-      throw new Error("TELEGRAM_API_ID and TELEGRAM_API_HASH environment variables are required");
-    }
-
-    this.session = new StringSession(sessionString || "");
-    this.client = new TelegramClient(this.session, parseInt(apiId), apiHash, {
+    // Check if we already have a session (static from env or dynamic)
+    const sessionString = process.env.TELEGRAM_SESSION || this.dynamicSession || "";
+    
+    this.session = new StringSession(sessionString);
+    this.client = new TelegramClient(this.session, parseInt(this.apiId), this.apiHash, {
       connectionRetries: 5,
     });
 
-    if (!this.client.connected) {
-      await this.client.start({
-        phoneNumber: async () => {
-          throw new Error("Phone number authentication not supported in MCP server. Please provide TELEGRAM_SESSION.");
+    // If we have a session string, try to connect
+    if (sessionString) {
+      try {
+        if (!this.client.connected) {
+          await this.client.connect();
+        }
+        // Test the connection by getting info about ourselves
+        await this.client.getMe();
+        return; // Successfully connected with existing session
+      } catch (error) {
+        console.error("Failed to connect with existing session:", error);
+        // Clear the invalid dynamic session and continue to require authorization
+        this.dynamicSession = null;
+        if (this.client) {
+          await this.client.disconnect();
+        }
+      }
+    }
+
+    // If no valid session, throw error indicating authorization is needed
+    throw new Error("TELEGRAM_AUTHORIZATION_REQUIRED: No valid session found. Please use telegram_authorize to authenticate.");
+  }
+
+  private async ensureClientReady(): Promise<void> {
+    if (!this.client || !this.client.connected) {
+      await this.initializeTelegramClient();
+    }
+    
+    // Reset session timeout on activity (for dynamic sessions)
+    this.resetSessionTimeout();
+  }
+
+  private createAuthRequiredResponse(): CallToolResult {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            error: "Authorization required",
+            message: "Please authorize with Telegram first using the 'telegram_authorize' tool",
+            authRequired: true,
+            steps: [
+              "1. Use 'telegram_authorize' with your phone number",
+              "2. Use 'telegram_verify_code' with the code sent to your phone",
+              "3. If you have 2FA enabled, include your password in step 2"
+            ]
+          }, null, 2),
         },
-        password: async () => {
-          throw new Error("Password authentication not supported in MCP server. Please provide TELEGRAM_SESSION.");
-        },
-        phoneCode: async () => {
-          throw new Error("Phone code authentication not supported in MCP server. Please provide TELEGRAM_SESSION.");
-        },
-        onError: (err: any) => console.error("Telegram auth error:", err),
-      });
+      ],
+      isError: true,
+    };
+  }
+
+  private setupProcessCleanup(): void {
+    // Handle uncaught exceptions
+    process.on('uncaughtException', (error) => {
+      console.error('Uncaught exception:', error);
+      this.cleanup().then(() => process.exit(1)).catch(() => process.exit(1));
+    });
+
+    // Handle unhandled promise rejections
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error('Unhandled rejection at:', promise, 'reason:', reason);
+      this.cleanup().then(() => process.exit(1)).catch(() => process.exit(1));
+    });
+  }
+
+  public async cleanup(): Promise<void> {
+    try {
+      if (this.sessionTimeout) {
+        clearTimeout(this.sessionTimeout);
+        this.sessionTimeout = null;
+      }
+
+      // Only logout if using dynamic session (not environment-based)
+      if (this.isDynamicSession()) {
+        const result = await this.telegramLogout({});
+        console.error('Cleanup logout result:', result);
+      }
+    } catch (error) {
+      console.error('Error during cleanup:', error);
+    }
+  }
+
+  private isDynamicSession(): boolean {
+    // Dynamic session means we authenticated through our tools, not via TELEGRAM_SESSION env var
+    return !process.env.TELEGRAM_SESSION && this.client?.connected === true;
+  }
+
+  private resetSessionTimeout(): void {
+    if (this.sessionTimeout) {
+      clearTimeout(this.sessionTimeout);
+    }
+
+    // Only set timeout for dynamic sessions
+    if (this.isDynamicSession()) {
+      this.sessionTimeout = setTimeout(async () => {
+        console.error('Session timeout reached, logging out...');
+        await this.cleanup();
+      }, this.SESSION_TIMEOUT_MS);
     }
   }
 
@@ -344,6 +454,47 @@ class TelegramMCPServer {
               required: ["chat"],
             },
           },
+          {
+            name: "telegram_authorize",
+            description: "Start Telegram authorization process with phone number",
+            inputSchema: {
+              type: "object",
+              properties: {
+                phoneNumber: {
+                  type: "string",
+                  description: "Phone number with country code (e.g., +1234567890)",
+                },
+              },
+              required: ["phoneNumber"],
+            },
+          },
+          {
+            name: "telegram_verify_code",
+            description: "Complete Telegram authorization with verification code and optional 2FA password",
+            inputSchema: {
+              type: "object",
+              properties: {
+                code: {
+                  type: "string",
+                  description: "Verification code sent to your phone",
+                },
+                password: {
+                  type: "string",
+                  description: "2FA password (if enabled on your account)",
+                },
+              },
+              required: ["code"],
+            },
+          },
+          {
+            name: "telegram_logout",
+            description: "Logout from Telegram and invalidate the current session",
+            inputSchema: {
+              type: "object",
+              properties: {},
+              required: [],
+            },
+          },
         ] as Tool[],
       };
     });
@@ -373,6 +524,12 @@ class TelegramMCPServer {
             return await this.getPrivateMessages(args);
           case "get_chat_status":
             return await this.getChatStatus(args);
+          case "telegram_authorize":
+            return await this.telegramAuthorize(args);
+          case "telegram_verify_code":
+            return await this.telegramVerifyCode(args);
+          case "telegram_logout":
+            return await this.telegramLogout(args);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -392,6 +549,15 @@ class TelegramMCPServer {
 
   private async getRecentMessages(args: unknown): Promise<CallToolResult> {
     const { channel, limit, sinceMinutes, sinceHours, sinceDate } = GetRecentMessagesSchema.parse(args);
+
+    try {
+      await this.ensureClientReady();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("TELEGRAM_AUTHORIZATION_REQUIRED")) {
+        return this.createAuthRequiredResponse();
+      }
+      throw error;
+    }
 
     if (!this.client) {
       throw new Error("Telegram client not initialized");
@@ -499,6 +665,15 @@ class TelegramMCPServer {
 
   private async getChannelInfo(args: unknown): Promise<CallToolResult> {
     const { channel } = GetChannelInfoSchema.parse(args);
+
+    try {
+      await this.ensureClientReady();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("TELEGRAM_AUTHORIZATION_REQUIRED")) {
+        return this.createAuthRequiredResponse();
+      }
+      throw error;
+    }
 
     if (!this.client) {
       throw new Error("Telegram client not initialized");
@@ -1184,15 +1359,360 @@ class TelegramMCPServer {
     }
   }
 
+  private async telegramAuthorize(args: unknown): Promise<CallToolResult> {
+    const { phoneNumber } = AuthorizeSchema.parse(args);
+
+    if (this.authorizationInProgress) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              error: "Authorization already in progress",
+              message: "Please complete the current authorization process using telegram_verify_code or wait for it to timeout",
+            }, null, 2),
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    try {
+      // Create a new client for authorization
+      this.session = new StringSession("");
+      this.client = new TelegramClient(this.session, parseInt(this.apiId), this.apiHash, {
+        connectionRetries: 5,
+      });
+
+      this.authorizationInProgress = true;
+
+      // Connect the client first
+      await this.client.connect();
+
+      // Send the code request
+      const result = await this.client.invoke(
+        new Api.auth.SendCode({
+          phoneNumber: phoneNumber,
+          apiId: parseInt(this.apiId),
+          apiHash: this.apiHash,
+          settings: new Api.CodeSettings({})
+        })
+      );
+
+      // Store the phone code hash for later use
+      (this.client as any).phoneCodeHash = (result as any).phoneCodeHash;
+      (this.client as any).phoneNumber = phoneNumber;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: "Verification code sent to your phone",
+              nextStep: "Use telegram_verify_code with the code you received",
+              phoneNumber: phoneNumber,
+            }, null, 2),
+          },
+        ],
+      };
+
+    } catch (error) {
+      this.authorizationInProgress = false;
+      
+      if (error instanceof Error) {        
+        if (error.message.includes("PHONE_NUMBER_INVALID")) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Invalid phone number",
+                  message: "Please provide a valid phone number with country code (e.g., +1234567890)",
+                }, null, 2),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (error.message.includes("FLOOD_WAIT")) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Rate limited",
+                  message: "Too many authorization attempts. Please wait before trying again.",
+                }, null, 2),
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+
+      throw new Error(`Failed to start authorization: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async telegramVerifyCode(args: unknown): Promise<CallToolResult> {
+    const { code, password } = VerifyCodeSchema.parse(args);
+
+    if (!this.authorizationInProgress || !this.client) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              error: "No authorization in progress",
+              message: "Please start authorization first using telegram_authorize",
+            }, null, 2),
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    try {
+      const phoneCodeHash = (this.client as any).phoneCodeHash;
+      const phoneNumber = (this.client as any).phoneNumber;
+
+      if (!phoneCodeHash || !phoneNumber) {
+        throw new Error("Missing authorization state. Please restart with telegram_authorize");
+      }
+
+      // First, try to sign in with the code
+      let result;
+      try {
+        result = await this.client.invoke(
+          new Api.auth.SignIn({
+            phoneNumber: phoneNumber,
+            phoneCodeHash: phoneCodeHash,
+            phoneCode: code,
+          })
+        );
+      } catch (signInError: any) {
+        // Check if 2FA is required
+        if (signInError.message && signInError.message.includes("SESSION_PASSWORD_NEEDED")) {
+          if (!password) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: "2FA password required",
+                    message: "Your account has 2FA enabled. Please use telegram_verify_code with both code and password parameters",
+                  }, null, 2),
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          // Get the password information
+          const passwordResult = await this.client.invoke(new Api.account.GetPassword());
+          
+          // Verify the 2FA password
+          const passwordCheck = await computeCheck(passwordResult, password);
+          
+          result = await this.client.invoke(
+            new Api.auth.CheckPassword({
+              password: passwordCheck,
+            })
+          );
+        } else {
+          throw signInError;
+        }
+      }
+
+      // Get the session string for future use
+      const sessionString = this.client.session.save() as unknown as string;
+      this.dynamicSession = sessionString;
+      this.authorizationInProgress = false;
+
+      // Clear temporary auth state
+      delete (this.client as any).phoneCodeHash;
+      delete (this.client as any).phoneNumber;
+
+      // Get user info to confirm successful login
+      const me = await this.client.getMe();
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: "Successfully authenticated with Telegram",
+              user: {
+                id: (me as any).id?.toString(),
+                firstName: (me as any).firstName,
+                lastName: (me as any).lastName,
+                username: (me as any).username,
+                phone: (me as any).phone,
+              },
+              sessionInfo: {
+                sessionCreated: true,
+                sessionStored: "in-memory",
+                note: "Session will be lost when the MCP server restarts. For persistent sessions, set TELEGRAM_SESSION environment variable.",
+              },
+            }, null, 2),
+          },
+        ],
+      };
+
+    } catch (error) {
+      this.authorizationInProgress = false;
+      
+      if (error instanceof Error) {
+        if (error.message.includes("PHONE_CODE_INVALID")) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Invalid verification code",
+                  message: "The verification code you entered is incorrect. Please try again with telegram_verify_code",
+                }, null, 2),
+              },
+            ],
+            isError: true,
+          };
+        }
+        
+        if (error.message.includes("PASSWORD_HASH_INVALID")) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Invalid 2FA password",
+                  message: "The 2FA password you entered is incorrect. Please try again with telegram_verify_code",
+                }, null, 2),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (error.message.includes("PHONE_CODE_EXPIRED")) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Verification code expired",
+                  message: "The verification code has expired. Please start over with telegram_authorize",
+                }, null, 2),
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+
+      throw new Error(`Failed to verify code: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async telegramLogout(args: unknown): Promise<CallToolResult> {
+    LogoutSchema.parse(args);
+
+    try {
+      if (this.client && this.client.connected) {
+        // Log out from Telegram
+        await this.client.invoke(new Api.auth.LogOut());
+        
+        // Disconnect the client
+        await this.client.disconnect();
+        console.error("Telegram session logged out and disconnected");
+      }
+
+      // Clear the dynamic session
+      this.dynamicSession = null;
+      this.client = null;
+      this.authorizationInProgress = false;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: "Successfully logged out from Telegram",
+              note: "You will need to authorize again to use Telegram functions",
+            }, null, 2),
+          },
+        ],
+      };
+
+    } catch (error) {
+      // Even if logout fails, clear our local state
+      this.dynamicSession = null;
+      this.client = null;
+      this.authorizationInProgress = false;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: "Logged out locally (Telegram logout may have failed)",
+              warning: error instanceof Error ? error.message : String(error),
+              note: "You will need to authorize again to use Telegram functions",
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  }
+
   async start(): Promise<void> {
     const transport = new StdioServerTransport();
+    
+    // Monitor transport for disconnection
+    transport.onclose = () => {
+      console.error("MCP transport disconnected, cleaning up...");
+      this.cleanup().then(() => {
+        console.error("Cleanup completed, exiting process...");
+        process.exit(0);
+      }).catch((error) => {
+        console.error("Cleanup failed:", error);
+        process.exit(1);
+      });
+    };
+
     await this.server.connect(transport);
     console.error("Telegram MCP Server running on stdio");
+    
+    // Start session timeout for dynamic sessions
+    this.resetSessionTimeout();
   }
 }
 
 // Start the server
 const server = new TelegramMCPServer();
+
+// Enhanced cleanup on process exit
+process.on('exit', async () => {
+  console.error('Process exiting, cleaning up...');
+  await server.cleanup();
+});
+
+process.on('SIGINT', async () => {
+  console.error('Received SIGINT, cleaning up...');
+  await server.cleanup();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.error('Received SIGTERM, cleaning up...');
+  await server.cleanup();
+  process.exit(0);
+});
+
 server.start().catch((error) => {
   console.error("Failed to start server:", error);
   process.exit(1);
