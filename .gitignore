@@ -39,6 +39,9 @@ pids
 coverage/
 *.lcov
 
+# CI report artifacts (JUnit XML etc.)
+reports/
+
 # Temporary folders
 tmp/
 temp/

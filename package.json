@@ -13,7 +13,9 @@
     "test": "npm run test:unit && npm run test:smoke",
     "test:unit": "node --import tsx --test tests/*.test.ts",
     "test:coverage": "node --import tsx --test --experimental-test-coverage tests/*.test.ts",
-    "test:smoke": "tsx scripts/test-server.ts"
+    "test:smoke": "tsx scripts/test-server.ts",
+    "test:ci": "mkdir -p reports && c8 --include=src --clean --reporter=text-summary --reporter=json-summary --reporter=cobertura --reporter=lcov node --import tsx --test --test-reporter junit --test-reporter-destination reports/junit.xml tests/*.test.ts",
+    "ci:summary": "tsx scripts/ci-summary.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.5.0",
@@ -22,10 +24,15 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "c8": "^12.0.0",
     "tsx": "^4.6.0",
     "typescript": "^5.3.0"
   },
-  "keywords": ["mcp", "telegram", "model-context-protocol"],
+  "keywords": [
+    "mcp",
+    "telegram",
+    "model-context-protocol"
+  ],
   "author": "",
   "license": "MIT"
 }
