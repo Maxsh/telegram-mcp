@@ -33,11 +33,27 @@ import { computeCheck } from "telegram/Password.js";
 
 // Validation schemas
 const GetRecentMessagesSchema = z.object({
-  channel: z.string().describe("Channel username or ID (e.g., @channelname or channel ID)"),
-  limit: z.number().optional().default(10).describe("Number of recent messages to retrieve (default: 10, max: 100)"),
+  channel: z.string().describe("Channel username or ID: @username, bare numeric id (1496296645), or -100-prefixed id (-1001496296645)"),
+  limit: z.number().min(1).max(100).optional().default(10).describe("Number of recent messages to retrieve (default: 10, max: 100)"),
+  offsetId: z.number().optional().describe("Return messages older than this message ID (pass nextOffsetId from the previous page to paginate through a busy channel)"),
   sinceMinutes: z.number().optional().describe("Get messages from the last N minutes"),
   sinceHours: z.number().optional().describe("Get messages from the last N hours"),
-  sinceDate: z.string().optional().describe("Get messages since this date (ISO format: 2023-12-01T10:00:00Z)"),
+  sinceDate: z.string().optional().describe("Get messages since this date. Accepts a full ISO datetime (2023-12-01T10:00:00Z), a plain date (2023-12-01, midnight in tz), or 'today' / 'yesterday' (midnight in tz)"),
+  tz: z.string().optional().describe("IANA time zone used to resolve date-only sinceDate and 'today'/'yesterday' (e.g., Europe/Kyiv). Default: UTC"),
+  maxTextLength: z.number().min(1).optional().describe("Truncate each message text to this many characters (adds textTruncated: true)"),
+  fields: z.array(z.string()).optional().describe("Return only these per-message fields. Valid: id, date, timestamp, sender, text, messageType, isOutgoing, mediaType, groupedId, link, forwardedFrom, views, replyToMsgId, textTruncated"),
+  excludeMedia: z.boolean().optional().describe("Omit media-only messages (no text and no caption)"),
+});
+
+const GetMessagesMultiSchema = z.object({
+  channels: z.array(z.string()).min(1).max(25).describe("Channel identifiers (1-25): @username, bare numeric id, or -100-prefixed id"),
+  limit: z.number().min(1).max(100).optional().default(50).describe("Max messages per channel (default: 50, max: 100)"),
+  sinceMinutes: z.number().optional().describe("Get messages from the last N minutes"),
+  sinceHours: z.number().optional().describe("Get messages from the last N hours"),
+  sinceDate: z.string().optional().describe("Get messages since this date. Accepts a full ISO datetime, a plain date (midnight in tz), or 'today' / 'yesterday'"),
+  tz: z.string().optional().describe("IANA time zone used to resolve date-only sinceDate and 'today'/'yesterday' (e.g., Europe/Kyiv). Default: UTC"),
+  maxTextLength: z.number().min(1).optional().describe("Truncate each message text to this many characters (adds textTruncated: true)"),
+  excludeMedia: z.boolean().optional().describe("Omit media-only messages (no text and no caption)"),
 });
 
 const GetChannelInfoSchema = z.object({
@@ -45,12 +61,15 @@ const GetChannelInfoSchema = z.object({
 });
 
 const SearchMessagesSchema = z.object({
-  channel: z.string().describe("Channel username or ID"),
+  channel: z.string().describe("Channel username or ID: @username, bare numeric id, or -100-prefixed id"),
   query: z.string().describe("Search query"),
-  limit: z.number().optional().default(10).describe("Number of messages to retrieve (default: 10, max: 100)"),
+  limit: z.number().min(1).max(100).optional().default(10).describe("Number of messages to retrieve (default: 10, max: 100)"),
+  offsetId: z.number().optional().describe("Return matches older than this message ID"),
   sinceMinutes: z.number().optional().describe("Search messages from the last N minutes"),
   sinceHours: z.number().optional().describe("Search messages from the last N hours"),
-  sinceDate: z.string().optional().describe("Search messages since this date (ISO format: 2023-12-01T10:00:00Z)"),
+  sinceDate: z.string().optional().describe("Search messages since this date. Accepts a full ISO datetime, a plain date (midnight in tz), or 'today' / 'yesterday'"),
+  tz: z.string().optional().describe("IANA time zone used to resolve date-only sinceDate and 'today'/'yesterday' (e.g., Europe/Kyiv). Default: UTC"),
+  maxTextLength: z.number().min(1).optional().describe("Truncate each message text to this many characters"),
 });
 
 const GetAvailableChannelsSchema = z.object({
@@ -72,10 +91,13 @@ const CheckUnreadMessagesSchema = z.object({
 
 const GetPrivateMessagesSchema = z.object({
   contact: z.string().describe("Contact identifier: username (@username), phone number (+1234567890), or user ID"),
-  limit: z.number().optional().default(10).describe("Number of messages to retrieve (default: 10, max: 100)"),
+  limit: z.number().min(1).max(100).optional().default(10).describe("Number of messages to retrieve (default: 10, max: 100)"),
+  offsetId: z.number().optional().describe("Return messages older than this message ID (pass nextOffsetId from the previous page to paginate)"),
   sinceMinutes: z.number().optional().describe("Get messages from the last N minutes"),
   sinceHours: z.number().optional().describe("Get messages from the last N hours"),
-  sinceDate: z.string().optional().describe("Get messages since this date (ISO format: 2023-12-01T10:00:00Z)"),
+  sinceDate: z.string().optional().describe("Get messages since this date. Accepts a full ISO datetime, a plain date (midnight in tz), or 'today' / 'yesterday'"),
+  tz: z.string().optional().describe("IANA time zone used to resolve date-only sinceDate and 'today'/'yesterday' (e.g., Europe/Kyiv). Default: UTC"),
+  maxTextLength: z.number().min(1).optional().describe("Truncate each message text to this many characters"),
 });
 
 const GetChatStatusSchema = z.object({
@@ -131,17 +153,478 @@ class TelegramMCPServer {
     this.setupProcessCleanup();
   }
 
-  private calculateCutoffDate(sinceMinutes?: number, sinceHours?: number, sinceDate?: string): Date | null {
-    if (sinceDate) {
-      return new Date(sinceDate);
-    }
+  private calculateCutoffDate(sinceMinutes?: number, sinceHours?: number, sinceDate?: string, tz?: string): Date | null {
     if (sinceMinutes) {
       return new Date(Date.now() - sinceMinutes * 60 * 1000);
     }
     if (sinceHours) {
       return new Date(Date.now() - sinceHours * 60 * 60 * 1000);
     }
+    if (sinceDate) {
+      const trimmed = sinceDate.trim();
+      if (/^today$/i.test(trimmed) || /^yesterday$/i.test(trimmed)) {
+        const ymd = this.todayInZone(tz, /^yesterday$/i.test(trimmed));
+        return this.zonedMidnightToDate(ymd, tz);
+      }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        return this.zonedMidnightToDate(trimmed, tz);
+      }
+      const parsed = new Date(trimmed);
+      if (isNaN(parsed.getTime())) {
+        throw new Error(`Invalid sinceDate "${sinceDate}". Use an ISO datetime (2023-12-01T10:00:00Z), a plain date (2023-12-01), 'today' or 'yesterday'.`);
+      }
+      return parsed;
+    }
     return null;
+  }
+
+  private validateZone(tz?: string): string {
+    if (!tz) {
+      return "UTC";
+    }
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: tz });
+      return tz;
+    } catch {
+      throw new Error(`Invalid tz "${tz}". Use an IANA time zone name such as Europe/Kyiv or America/New_York.`);
+    }
+  }
+
+  /**
+   * Offset (in ms) of a time zone at a given instant, e.g. +10800000 for UTC+3.
+   */
+  private zoneOffsetMs(zone: string, atMs: number): number {
+    const dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const parts = dtf.formatToParts(new Date(atMs));
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? "0");
+    const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+    return asUtc - atMs;
+  }
+
+  /**
+   * Convert a plain date (YYYY-MM-DD) at 00:00 in the given zone to a UTC Date.
+   * DST-correct: the offset is resolved twice so that boundary days land on real local midnight.
+   */
+  private zonedMidnightToDate(ymd: string, tz?: string): Date {
+    const zone = this.validateZone(tz);
+    const [y, m, d] = ymd.split("-").map(Number);
+    const utcMidnight = Date.UTC(y, m - 1, d, 0, 0, 0);
+    const firstGuess = utcMidnight - this.zoneOffsetMs(zone, utcMidnight);
+    const refined = utcMidnight - this.zoneOffsetMs(zone, firstGuess);
+    return new Date(refined);
+  }
+
+  /**
+   * Today's date (YYYY-MM-DD) in the given zone, optionally shifted one day back.
+   */
+  private todayInZone(tz?: string, yesterday: boolean = false): string {
+    const zone = this.validateZone(tz);
+    const nowYmd = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    if (!yesterday) {
+      return nowYmd;
+    }
+    const [y, m, d] = nowYmd.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d) - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  }
+
+  /**
+   * Username of an entity, falling back to the newer collectible `usernames[]` field
+   * (channels like @tviy_kyiv only expose their handle there).
+   */
+  private extractUsername(entity: any): string | null {
+    if (entity.username) {
+      return entity.username;
+    }
+    const usernames = entity.usernames;
+    if (Array.isArray(usernames) && usernames.length > 0) {
+      const active = usernames.find((u: any) => u.active) || usernames[0];
+      if (active?.username) {
+        return active.username;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Canonical description of a resolved entity: bare id, ready-to-use peer
+   * (-100 prefix for channels/supergroups, - prefix for basic groups), title,
+   * @username and logical type.
+   */
+  private describeEntity(entity: any): { id: string; peer: string; title: string | null; username: string | null; type: string } {
+    const className = entity.className || "";
+    let type = "unknown";
+    if (className === "User") {
+      type = "user";
+    } else if (className === "Chat") {
+      type = "group";
+    } else if (className === "Channel") {
+      type = entity.broadcast ? "channel" : "supergroup";
+    }
+
+    const id = entity.id !== undefined && entity.id !== null ? String(entity.id) : "";
+    let peer = id;
+    if (className === "Channel") {
+      peer = `-100${id}`;
+    } else if (className === "Chat") {
+      peer = `-${id}`;
+    }
+
+    const rawUsername = this.extractUsername(entity);
+    const title = entity.title || [entity.firstName, entity.lastName].filter(Boolean).join(" ") || rawUsername || null;
+
+    return {
+      id,
+      peer,
+      title,
+      username: rawUsername ? `@${rawUsername}` : null,
+      type,
+    };
+  }
+
+  /**
+   * Resolve an identifier to an entity, accepting @username, bare numeric id and
+   * -100/-prefixed ids. Bare numeric ids are ambiguous (GramJS treats them as user
+   * ids), so the channel forms are tried first for pure-digit input.
+   */
+  private async resolveEntitySmart(identifier: string): Promise<any> {
+    if (!this.client) {
+      throw new Error("Telegram client not initialized");
+    }
+    const raw = identifier.trim();
+    let lastError: unknown = null;
+    try {
+      return await this.client.getEntity(raw);
+    } catch (error) {
+      lastError = error;
+    }
+    const digits = raw.replace(/^@/, "");
+    if (/^\d+$/.test(digits)) {
+      for (const candidate of [`-100${digits}`, `-${digits}`]) {
+        try {
+          return await this.client.getEntity(candidate);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+    }
+    throw new Error(
+      `Could not resolve "${identifier}" to a channel, group or user. ` +
+      `Try the @username or the -100-prefixed channel id (see get_available_channels -> peer). ` +
+      `Underlying error: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+    );
+  }
+
+  /**
+   * Human-readable type of a message's media, derived without extra API calls.
+   */
+  private getMediaType(msg: any): string {
+    if (msg.media) {
+      const cls = msg.media.className;
+      switch (cls) {
+        case "MessageMediaPhoto":
+          return "photo";
+        case "MessageMediaDocument": {
+          const doc: any = msg.media.document;
+          const mime: string = doc?.mimeType || "";
+          const attrs: any[] = doc?.attributes || [];
+          if (attrs.some((a) => a.className === "DocumentAttributeAnimated")) {
+            return "animation";
+          }
+          if (attrs.some((a) => a.className === "DocumentAttributeSticker")) {
+            return "sticker";
+          }
+          if (attrs.some((a) => a.className === "DocumentAttributeVideo")) {
+            return "video";
+          }
+          const audioAttr = attrs.find((a) => a.className === "DocumentAttributeAudio");
+          if (audioAttr?.voice) {
+            return "voice";
+          }
+          if (audioAttr) {
+            return "audio";
+          }
+          if (mime.startsWith("image/")) {
+            return "image";
+          }
+          if (mime.startsWith("video/")) {
+            return "video";
+          }
+          if (mime.startsWith("audio/")) {
+            return "audio";
+          }
+          return "document";
+        }
+        case "MessageMediaWebPage":
+          return "webpage";
+        case "MessageMediaPoll":
+          return "poll";
+        case "MessageMediaGeo":
+          return "location";
+        case "MessageMediaContact":
+          return "contact";
+        case "MessageMediaDice":
+          return "dice";
+        case "MessageMediaGame":
+          return "game";
+        case "MessageMediaInvoice":
+          return "invoice";
+        default:
+          return "media";
+      }
+    }
+    return "text";
+  }
+
+  /**
+   * Public t.me link for a channel message (username-based for public channels,
+   * t.me/c for private ones). Returns null for groups and private chats.
+   */
+  private buildMessageLink(entity: any, messageId: number): string | null {
+    const className = (entity as any).className || "";
+    if (className !== "Channel") {
+      return null;
+    }
+    const rawUsername = this.extractUsername(entity);
+    if (rawUsername) {
+      return `https://t.me/${rawUsername}/${messageId}`;
+    }
+    return `https://t.me/c/${entity.id}/${messageId}`;
+  }
+
+  /**
+   * Best-effort description of a message's forward origin, without extra API calls.
+   */
+  private describeForwarded(fwdFrom: any): string | null {
+    if (!fwdFrom) {
+      return null;
+    }
+    const parts: string[] = [];
+    if (fwdFrom.fromName) {
+      parts.push(String(fwdFrom.fromName));
+    } else if (fwdFrom.fromId) {
+      const peer = fwdFrom.fromId;
+      if (peer.channelId) {
+        parts.push(`channel ${peer.channelId.toString()}`);
+      } else if (peer.userId) {
+        parts.push(`user ${peer.userId.toString()}`);
+      } else if (peer.chatId) {
+        parts.push(`chat ${peer.chatId.toString()}`);
+      }
+    }
+    if (fwdFrom.postAuthor) {
+      parts.push(`via ${fwdFrom.postAuthor}`);
+    }
+    return parts.length > 0 ? parts.join(" ") : null;
+  }
+
+  /**
+   * Map a GramJS message to the response shape. Keeps every legacy field and adds
+   * mediaType / groupedId / link / forwardedFrom. Media captions surface as text.
+   */
+  private mapMessage(msg: any, entity: any): any {
+    const date = new Date(msg.date * 1000);
+    const className = (entity as any).className || "";
+
+    let sender = "Unknown";
+    let isOutgoing = false;
+
+    if (className === "User") {
+      if (msg.out) {
+        sender = "You";
+        isOutgoing = true;
+      } else {
+        const firstName = (entity as any).firstName || "";
+        const lastName = (entity as any).lastName || "";
+        sender = `${firstName} ${lastName}`.trim() || this.extractUsername(entity) || "Contact";
+      }
+    } else {
+      if (msg.out) {
+        sender = "You";
+        isOutgoing = true;
+      } else {
+        sender = msg.fromId ? `ID: ${msg.fromId}` : "Channel";
+      }
+    }
+
+    const hasText = Boolean(msg.text || msg.message);
+    const mediaType = this.getMediaType(msg);
+
+    const messageData: any = {
+      id: msg.id,
+      date: date.toISOString(),
+      timestamp: msg.date,
+      sender,
+      text: msg.text || msg.message || "[Media/Non-text message]",
+    };
+
+    if (mediaType !== "text") {
+      messageData.mediaType = mediaType;
+    }
+
+    const link = this.buildMessageLink(entity, msg.id);
+    if (link) {
+      messageData.link = link;
+    }
+
+    const forwardedFrom = this.describeForwarded(msg.fwdFrom);
+    if (forwardedFrom) {
+      messageData.forwardedFrom = forwardedFrom;
+    }
+
+    if (msg.groupedId !== undefined && msg.groupedId !== null) {
+      messageData.groupedId = msg.groupedId.toString();
+    }
+
+    if (className === "User") {
+      messageData.isOutgoing = isOutgoing;
+      messageData.messageType = hasText ? "text" : "media";
+    } else {
+      messageData.views = msg.views || 0;
+    }
+
+    if (msg.replyToMsgId) {
+      messageData.replyToMsgId = msg.replyToMsgId;
+    }
+
+    return messageData;
+  }
+
+  /**
+   * Fetch a window of messages, paging with GramJS offsetId until the limit is
+   * reached, the since-cutoff is crossed, or the peer runs out of messages.
+   * Unlike a single getMessages call this cannot silently truncate a busy window.
+   */
+  private async fetchMessageWindow(
+    entity: any,
+    options: { limit: number; offsetId?: number; cutoffDate?: Date | null }
+  ): Promise<{ collected: any[]; hasMore: boolean; nextOffsetId: number | null; newestMessageDate: string | null }> {
+    if (!this.client) {
+      throw new Error("Telegram client not initialized");
+    }
+    const { limit, offsetId, cutoffDate } = options;
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 50; // safety net: never fetch more than 5000 messages
+
+    const collected: any[] = [];
+    let currentOffset = offsetId;
+    let exhausted = false;
+    let reachedCutoff = false;
+    let newestMessageDate: string | null = null;
+
+    for (let page = 0; page < MAX_PAGES && collected.length < limit; page++) {
+      const pageSize = cutoffDate ? PAGE_SIZE : Math.min(PAGE_SIZE, limit - collected.length);
+      const request: any = { limit: pageSize };
+      if (currentOffset) {
+        request.offsetId = currentOffset;
+      }
+      const batch = await this.client.getMessages(entity, request);
+
+      if (!batch || batch.length === 0) {
+        exhausted = true;
+        break;
+      }
+
+      if (!newestMessageDate && batch[0]?.date) {
+        newestMessageDate = new Date(batch[0].date * 1000).toISOString();
+      }
+
+      exhausted = batch.length < pageSize;
+
+      for (const msg of batch) {
+        const msgDate = new Date((msg.date ?? 0) * 1000);
+        if (cutoffDate && msgDate < cutoffDate) {
+          reachedCutoff = true;
+          break;
+        }
+        collected.push(msg);
+        if (collected.length >= limit) {
+          break;
+        }
+      }
+
+      if (reachedCutoff || exhausted || collected.length >= limit) {
+        break;
+      }
+      currentOffset = batch[batch.length - 1].id;
+    }
+
+    const hasMore = !reachedCutoff && !exhausted && collected.length >= limit;
+    const nextOffsetId = collected.length > 0 ? collected[collected.length - 1].id : currentOffset ?? null;
+
+    return { collected, hasMore, nextOffsetId, newestMessageDate };
+  }
+
+  private static readonly MESSAGE_FIELDS = [
+    "id",
+    "date",
+    "timestamp",
+    "sender",
+    "text",
+    "messageType",
+    "isOutgoing",
+    "mediaType",
+    "groupedId",
+    "link",
+    "forwardedFrom",
+    "views",
+    "replyToMsgId",
+    "textTruncated",
+  ];
+
+  /**
+   * Digest-friendly output shaping: drop captionless media posts, cap text length,
+   * and project messages onto a caller-chosen set of fields.
+   */
+  private applyOutputOptions(
+    messages: any[],
+    options: { maxTextLength?: number; fields?: string[]; excludeMedia?: boolean }
+  ): any[] {
+    const { maxTextLength, fields, excludeMedia } = options;
+
+    let result = messages;
+
+    if (excludeMedia) {
+      result = result.filter((m) => m.text !== "[Media/Non-text message]");
+    }
+
+    if (maxTextLength !== undefined) {
+      result = result.map((m) => {
+        if (typeof m.text === "string" && m.text.length > maxTextLength) {
+          return { ...m, text: m.text.slice(0, maxTextLength), textTruncated: true };
+        }
+        return m;
+      });
+    }
+
+    if (fields && fields.length > 0) {
+      const unknown = fields.filter((f) => !TelegramMCPServer.MESSAGE_FIELDS.includes(f));
+      if (unknown.length > 0) {
+        throw new Error(`Unknown message fields: ${unknown.join(", ")}. Valid fields: ${TelegramMCPServer.MESSAGE_FIELDS.join(", ")}`);
+      }
+      result = result.map((m) => {
+        const projected: any = {};
+        for (const f of fields) {
+          projected[f] = f in m ? m[f] : null;
+        }
+        return projected;
+      });
+    }
+
+    return result;
   }
 
   private async initializeTelegramClient(): Promise<void> {
@@ -183,6 +666,24 @@ class TelegramMCPServer {
     
     // Reset session timeout on activity (for dynamic sessions)
     this.resetSessionTimeout();
+  }
+
+  /**
+   * Ensure the client is connected and return it; returns null (instead of
+   * throwing) when the session is missing so callers can answer with the
+   * auth-required response. Every data tool must go through this so each one
+   * works as the first call of a fresh session.
+   */
+  private async ensureReadyOrAuth(): Promise<TelegramClient | null> {
+    try {
+      await this.ensureClientReady();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("TELEGRAM_AUTHORIZATION_REQUIRED")) {
+        return null;
+      }
+      throw error;
+    }
+    return this.client;
   }
 
   private createAuthRequiredResponse(): CallToolResult {
@@ -262,18 +763,78 @@ class TelegramMCPServer {
         tools: [
           {
             name: "get_recent_messages",
-            description: "Get recent messages from a Telegram channel, group, or private chat",
+            description: "Get recent messages from a Telegram channel, group, or private chat. Returns resolved channel info (id/peer/username/type), hasMore/nextOffsetId for pagination, and lastMessageDate so an empty window can be told apart from a dead channel.",
             inputSchema: {
               type: "object",
               properties: {
                 channel: {
                   type: "string",
-                  description: "Channel username (@channelname), group username, private chat username (@username), phone number (+1234567890), or chat ID",
+                  description: "Channel username (@channelname), bare numeric id (1496296645), -100-prefixed id (-1001496296645), private chat username (@username), or phone number",
                 },
                 limit: {
                   type: "number",
                   description: "Number of recent messages to retrieve (default: 10, max: 100)",
                   default: 10,
+                  minimum: 1,
+                  maximum: 100,
+                },
+                offsetId: {
+                  type: "number",
+                  description: "Return messages older than this message ID (pass nextOffsetId from the previous page to paginate)",
+                },
+                sinceMinutes: {
+                  type: "number",
+                  description: "Get messages from the last N minutes",
+                  minimum: 1,
+                },
+                sinceHours: {
+                  type: "number",
+                  description: "Get messages from the last N hours",
+                  minimum: 1,
+                },
+                sinceDate: {
+                  type: "string",
+                  description: "Get messages since this date. Accepts a full ISO datetime (2023-12-01T10:00:00Z), a plain date (2023-12-01, midnight in tz), or 'today' / 'yesterday'",
+                },
+                tz: {
+                  type: "string",
+                  description: "IANA time zone used to resolve date-only sinceDate and 'today'/'yesterday' (e.g., Europe/Kyiv). Default: UTC",
+                },
+                maxTextLength: {
+                  type: "number",
+                  description: "Truncate each message text to this many characters (adds textTruncated: true)",
+                  minimum: 1,
+                },
+                fields: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Return only these per-message fields. Valid: id, date, timestamp, sender, text, messageType, isOutgoing, mediaType, groupedId, link, forwardedFrom, views, replyToMsgId, textTruncated",
+                },
+                excludeMedia: {
+                  type: "boolean",
+                  description: "Omit media-only messages (no text and no caption)",
+                },
+              },
+              required: ["channel"],
+            },
+          },
+          {
+            name: "get_messages_multi",
+            description: "Get recent messages from multiple Telegram channels in one call (1-25 channels). Returns per-channel results and per-channel errors, so one bad channel does not fail the call. Same response fields as get_recent_messages per channel.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                channels: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Channel identifiers (1-25): @username, bare numeric id, or -100-prefixed id",
+                  minItems: 1,
+                  maxItems: 25,
+                },
+                limit: {
+                  type: "number",
+                  description: "Max messages per channel (default: 50, max: 100)",
+                  default: 50,
                   minimum: 1,
                   maximum: 100,
                 },
@@ -289,10 +850,23 @@ class TelegramMCPServer {
                 },
                 sinceDate: {
                   type: "string",
-                  description: "Get messages since this date (ISO format: 2023-12-01T10:00:00Z)",
+                  description: "Get messages since this date. Accepts a full ISO datetime, a plain date (midnight in tz), or 'today' / 'yesterday'",
+                },
+                tz: {
+                  type: "string",
+                  description: "IANA time zone used to resolve date-only sinceDate and 'today'/'yesterday' (e.g., Europe/Kyiv). Default: UTC",
+                },
+                maxTextLength: {
+                  type: "number",
+                  description: "Truncate each message text to this many characters (adds textTruncated: true)",
+                  minimum: 1,
+                },
+                excludeMedia: {
+                  type: "boolean",
+                  description: "Omit media-only messages (no text and no caption)",
                 },
               },
-              required: ["channel"],
+              required: ["channels"],
             },
           },
           {
@@ -342,7 +916,20 @@ class TelegramMCPServer {
                 },
                 sinceDate: {
                   type: "string",
-                  description: "Search messages since this date (ISO format: 2023-12-01T10:00:00Z)",
+                  description: "Search messages since this date. Accepts a full ISO datetime, a plain date (midnight in tz), or 'today' / 'yesterday'",
+                },
+                tz: {
+                  type: "string",
+                  description: "IANA time zone used to resolve date-only sinceDate and 'today'/'yesterday' (e.g., Europe/Kyiv). Default: UTC",
+                },
+                offsetId: {
+                  type: "number",
+                  description: "Return matches older than this message ID",
+                },
+                maxTextLength: {
+                  type: "number",
+                  description: "Truncate each message text to this many characters",
+                  minimum: 1,
                 },
               },
               required: ["channel", "query"],
@@ -451,7 +1038,20 @@ class TelegramMCPServer {
                 },
                 sinceDate: {
                   type: "string",
-                  description: "Get messages since this date (ISO format: 2023-12-01T10:00:00Z)",
+                  description: "Get messages since this date. Accepts a full ISO datetime, a plain date (midnight in tz), or 'today' / 'yesterday'",
+                },
+                tz: {
+                  type: "string",
+                  description: "IANA time zone used to resolve date-only sinceDate and 'today'/'yesterday' (e.g., Europe/Kyiv). Default: UTC",
+                },
+                offsetId: {
+                  type: "number",
+                  description: "Return messages older than this message ID (pass nextOffsetId from the previous page to paginate)",
+                },
+                maxTextLength: {
+                  type: "number",
+                  description: "Truncate each message text to this many characters",
+                  minimum: 1,
                 },
               },
               required: ["contact"],
@@ -518,10 +1118,6 @@ class TelegramMCPServer {
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       try {
-        if (!this.client) {
-          await this.initializeTelegramClient();
-        }
-
         const { name, arguments: args } = request.params;
 
         switch (name) {
@@ -533,6 +1129,8 @@ class TelegramMCPServer {
             return await this.searchMessages(args);
           case "get_available_channels":
             return await this.getAvailableChannels(args);
+          case "get_messages_multi":
+            return await this.getMessagesMulti(args);
           case "mark_messages_read":
             return await this.markMessagesRead(args);
           case "check_unread_messages":
@@ -565,105 +1163,54 @@ class TelegramMCPServer {
   }
 
   private async getRecentMessages(args: unknown): Promise<CallToolResult> {
-    const { channel, limit, sinceMinutes, sinceHours, sinceDate } = GetRecentMessagesSchema.parse(args);
+    const params = GetRecentMessagesSchema.parse(args);
 
-    try {
-      await this.ensureClientReady();
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("TELEGRAM_AUTHORIZATION_REQUIRED")) {
-        return this.createAuthRequiredResponse();
-      }
-      throw error;
-    }
-
-    if (!this.client) {
-      throw new Error("Telegram client not initialized");
+    if (!(await this.ensureReadyOrAuth())) {
+      return this.createAuthRequiredResponse();
     }
 
     try {
-      // Resolve channel entity
-      const entity = await this.client.getEntity(channel);
-      
+      // Resolve channel entity (accepts @username, bare id and -100-prefixed id)
+      const entity = await this.resolveEntitySmart(params.channel);
+
       // Calculate cutoff date if time filtering is requested
-      const cutoffDate = this.calculateCutoffDate(sinceMinutes, sinceHours, sinceDate);
-      
-      // Get recent messages
-      const messages = await this.client.getMessages(entity, { limit: cutoffDate ? limit * 3 : limit });
+      const cutoffDate = this.calculateCutoffDate(params.sinceMinutes, params.sinceHours, params.sinceDate, params.tz);
 
-      let filteredMessages = messages.map((msg: any) => {
-        const date = new Date(msg.date * 1000);
-        
-        // Determine sender info based on entity type
-        let sender = "Unknown";
-        let isOutgoing = false;
-        
-        if ((entity as any).className === "User") {
-          // Private chat
-          if (msg.out) {
-            sender = "You";
-            isOutgoing = true;
-          } else {
-            const firstName = (entity as any).firstName || "";
-            const lastName = (entity as any).lastName || "";
-            sender = `${firstName} ${lastName}`.trim() || (entity as any).username || "Contact";
-          }
-        } else {
-          // Channel or group
-          if (msg.out) {
-            sender = "You";
-            isOutgoing = true;
-          } else {
-            sender = msg.fromId ? `ID: ${msg.fromId}` : "Channel";
-          }
-        }
-        
-        const messageData: any = {
-          id: msg.id,
-          date: date.toISOString(),
-          timestamp: msg.date,
-          sender,
-          text: msg.text || "[Media/Non-text message]",
-        };
-
-        // Add additional fields based on entity type
-        if ((entity as any).className === "User") {
-          messageData.isOutgoing = isOutgoing;
-          messageData.messageType = msg.text ? "text" : "media";
-        } else {
-          messageData.views = msg.views || 0;
-        }
-
-        if (msg.replyToMsgId) {
-          messageData.replyToMsgId = msg.replyToMsgId;
-        }
-
-        return messageData;
+      // Page through the window so busy channels are not silently truncated
+      const window = await this.fetchMessageWindow(entity, {
+        limit: params.limit,
+        offsetId: params.offsetId,
+        cutoffDate,
       });
 
-      // Apply time filtering if specified
-      if (cutoffDate) {
-        filteredMessages = filteredMessages.filter(msg => 
-          new Date(msg.timestamp * 1000) >= cutoffDate
-        );
-        // Limit after filtering
-        filteredMessages = filteredMessages.slice(0, limit);
-      }
+      let messages = window.collected.map((msg: any) => this.mapMessage(msg, entity));
+      messages = this.applyOutputOptions(messages, params);
 
-      const channelTitle = (entity as any).title || (entity as any).firstName || channel;
+      const resolved = this.describeEntity(entity);
 
       const result: any = {
-        channel: channelTitle,
-        messagesCount: filteredMessages.length,
-        messages: filteredMessages,
+        channel: resolved.title || params.channel,
+        resolved,
+        messagesCount: messages.length,
+        messages,
+        hasMore: window.hasMore,
+        nextOffsetId: window.nextOffsetId,
       };
+
+      // Newest message seen during the scan: lets callers tell an empty window
+      // apart from a dead or unresolved channel.
+      if (window.newestMessageDate) {
+        result.lastMessageDate = window.newestMessageDate;
+      }
 
       // Add time filter info to result
       if (cutoffDate) {
         result.timeFilter = {
           since: cutoffDate.toISOString(),
-          sinceMinutes,
-          sinceHours,
-          sinceDate,
+          sinceMinutes: params.sinceMinutes,
+          sinceHours: params.sinceHours,
+          sinceDate: params.sinceDate,
+          tz: params.tz ?? "UTC",
         };
       }
 
@@ -671,38 +1218,32 @@ class TelegramMCPServer {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify(result),
           },
         ],
       };
     } catch (error) {
-      throw new Error(`Failed to get messages from channel ${channel}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Failed to get messages from channel ${params.channel}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   private async getChannelInfo(args: unknown): Promise<CallToolResult> {
     const { channel } = GetChannelInfoSchema.parse(args);
 
-    try {
-      await this.ensureClientReady();
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("TELEGRAM_AUTHORIZATION_REQUIRED")) {
-        return this.createAuthRequiredResponse();
-      }
-      throw error;
-    }
-
-    if (!this.client) {
-      throw new Error("Telegram client not initialized");
+    if (!(await this.ensureReadyOrAuth())) {
+      return this.createAuthRequiredResponse();
     }
 
     try {
-      const entity = await this.client.getEntity(channel);
-      
-      let channelInfo: any = {
-        id: (entity as any).id?.toString(),
-        title: (entity as any).title || (entity as any).firstName,
-        username: (entity as any).username,
+      const entity = await this.resolveEntitySmart(channel);
+      const resolved = this.describeEntity(entity);
+
+      const channelInfo: any = {
+        id: resolved.id,
+        peer: resolved.peer,
+        title: resolved.title,
+        username: this.extractUsername(entity),
+        type: resolved.type,
       };
 
       // Add additional info if it's a channel
@@ -720,7 +1261,7 @@ class TelegramMCPServer {
         content: [
           {
             type: "text",
-            text: JSON.stringify(channelInfo, null, 2),
+            text: JSON.stringify(channelInfo),
           },
         ],
       };
@@ -730,58 +1271,53 @@ class TelegramMCPServer {
   }
 
   private async searchMessages(args: unknown): Promise<CallToolResult> {
-    const { channel, query, limit, sinceMinutes, sinceHours, sinceDate } = SearchMessagesSchema.parse(args);
+    const params = SearchMessagesSchema.parse(args);
 
-    if (!this.client) {
-      throw new Error("Telegram client not initialized");
+    const client = await this.ensureReadyOrAuth();
+    if (!client) {
+      return this.createAuthRequiredResponse();
     }
 
     try {
-      const entity = await this.client.getEntity(channel);
-      
+      const entity = await this.resolveEntitySmart(params.channel);
+      const resolved = this.describeEntity(entity);
+
       // Calculate cutoff date if time filtering is requested
-      const cutoffDate = this.calculateCutoffDate(sinceMinutes, sinceHours, sinceDate);
-      
+      const cutoffDate = this.calculateCutoffDate(params.sinceMinutes, params.sinceHours, params.sinceDate, params.tz);
+
       // Search messages - if we have time filter, get more results to account for filtering
-      const searchLimit = cutoffDate ? Math.min(limit * 5, 100) : limit;
-      
-      const result = await this.client.invoke(
-        new Api.messages.Search({
-          peer: entity,
-          q: query,
-          limit: searchLimit,
-          filter: new Api.InputMessagesFilterEmpty(),
-        })
+      const searchLimit = cutoffDate ? Math.min(params.limit * 5, 100) : params.limit;
+
+      const searchRequest: any = {
+        peer: entity,
+        q: params.query,
+        limit: searchLimit,
+        filter: new Api.InputMessagesFilterEmpty(),
+      };
+      if (params.offsetId) {
+        searchRequest.offsetId = params.offsetId;
+      }
+
+      const result = await client.invoke(
+        new Api.messages.Search(searchRequest)
       );
 
-      let messages = (result as any).messages?.map((msg: any) => {
-        const date = new Date(msg.date * 1000);
-        const sender = msg.fromId ? `ID: ${msg.fromId}` : "Channel";
-        
-        return {
-          id: msg.id,
-          date: date.toISOString(),
-          timestamp: msg.date,
-          sender,
-          text: msg.message || "[Media/Non-text message]",
-          views: msg.views || 0,
-        };
-      }) || [];
+      let messages = (result as any).messages?.map((msg: any) => this.mapMessage(msg, entity)) || [];
+      messages = this.applyOutputOptions(messages, { maxTextLength: params.maxTextLength });
 
       // Apply time filtering if specified
       if (cutoffDate) {
-        messages = messages.filter((msg: any) => 
+        messages = messages.filter((msg: any) =>
           new Date(msg.timestamp * 1000) >= cutoffDate
         );
         // Limit after filtering
-        messages = messages.slice(0, limit);
+        messages = messages.slice(0, params.limit);
       }
 
-      const channelTitle = (entity as any).title || (entity as any).firstName || channel;
-
       const searchResult: any = {
-        channel: channelTitle,
-        query,
+        channel: resolved.title || params.channel,
+        resolved,
+        query: params.query,
         resultsCount: messages.length,
         messages,
       };
@@ -790,9 +1326,10 @@ class TelegramMCPServer {
       if (cutoffDate) {
         searchResult.timeFilter = {
           since: cutoffDate.toISOString(),
-          sinceMinutes,
-          sinceHours,
-          sinceDate,
+          sinceMinutes: params.sinceMinutes,
+          sinceHours: params.sinceHours,
+          sinceDate: params.sinceDate,
+          tz: params.tz ?? "UTC",
         };
       }
 
@@ -800,25 +1337,26 @@ class TelegramMCPServer {
         content: [
           {
             type: "text",
-            text: JSON.stringify(searchResult, null, 2),
+            text: JSON.stringify(searchResult),
           },
         ],
       };
     } catch (error) {
-      throw new Error(`Failed to search messages in channel ${channel}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Failed to search messages in channel ${params.channel}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   private async getAvailableChannels(args: unknown): Promise<CallToolResult> {
     const { limit, includeGroups } = GetAvailableChannelsSchema.parse(args);
 
-    if (!this.client) {
-      throw new Error("Telegram client not initialized");
+    const client = await this.ensureReadyOrAuth();
+    if (!client) {
+      return this.createAuthRequiredResponse();
     }
 
     try {
       // Get all dialogs (conversations)
-      const dialogs = await this.client.getDialogs({ limit });
+      const dialogs = await client.getDialogs({ limit });
 
       const channels: any[] = [];
 
@@ -832,13 +1370,16 @@ class TelegramMCPServer {
           
           // Include channels always, groups only if requested
           if (isChannel || (includeGroups && isGroup)) {
+            const resolved = this.describeEntity(entity);
+            const rawUsername = this.extractUsername(entity);
             const channelInfo: any = {
-              id: (entity as any).id?.toString(),
-              title: (entity as any).title,
-              username: (entity as any).username ? `@${(entity as any).username}` : null,
-              type: isChannel ? "channel" : "group",
+              id: resolved.id,
+              peer: resolved.peer,
+              title: resolved.title,
+              username: rawUsername ? `@${rawUsername}` : null,
+              type: resolved.type,
               participantsCount: (entity as any).participantsCount || 0,
-              isPrivate: !(entity as any).username,
+              isPrivate: !rawUsername,
               accessHash: (entity as any).accessHash?.toString(),
               // Additional useful info
               verified: (entity as any).verified || false,
@@ -870,7 +1411,7 @@ class TelegramMCPServer {
                 if (!a.username && b.username) return 1;
                 return a.title.localeCompare(b.title);
               }),
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -879,16 +1420,91 @@ class TelegramMCPServer {
     }
   }
 
+  /**
+   * Batch fetch across channels. One failing channel produces a per-channel error
+   * entry instead of failing the whole call.
+   */
+  private async getMessagesMulti(args: unknown): Promise<CallToolResult> {
+    const params = GetMessagesMultiSchema.parse(args);
+
+    if (!(await this.ensureReadyOrAuth())) {
+      return this.createAuthRequiredResponse();
+    }
+
+    const cutoffDate = this.calculateCutoffDate(params.sinceMinutes, params.sinceHours, params.sinceDate, params.tz);
+
+    const results: any[] = [];
+
+    for (const channel of params.channels) {
+      try {
+        const entity = await this.resolveEntitySmart(channel);
+        const resolved = this.describeEntity(entity);
+        const window = await this.fetchMessageWindow(entity, { limit: params.limit, cutoffDate });
+
+        let messages = window.collected.map((msg: any) => this.mapMessage(msg, entity));
+        messages = this.applyOutputOptions(messages, params);
+
+        const entry: any = {
+          channel,
+          ok: true,
+          resolved,
+          messagesCount: messages.length,
+          messages,
+          hasMore: window.hasMore,
+          nextOffsetId: window.nextOffsetId,
+        };
+
+        if (window.newestMessageDate) {
+          entry.lastMessageDate = window.newestMessageDate;
+        }
+
+        if (cutoffDate) {
+          entry.timeFilter = {
+            since: cutoffDate.toISOString(),
+            sinceMinutes: params.sinceMinutes,
+            sinceHours: params.sinceHours,
+            sinceDate: params.sinceDate,
+            tz: params.tz ?? "UTC",
+          };
+        }
+
+        results.push(entry);
+      } catch (error) {
+        results.push({
+          channel,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const summary = {
+      requested: params.channels.length,
+      succeeded: results.filter((r) => r.ok).length,
+      failed: results.filter((r) => !r.ok).length,
+    };
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ summary, results }),
+        },
+      ],
+    };
+  }
+
   private async markMessagesRead(args: unknown): Promise<CallToolResult> {
     const { channel, messageIds, maxId } = MarkMessagesReadSchema.parse(args);
 
-    if (!this.client) {
-      throw new Error("Telegram client not initialized");
+    const client = await this.ensureReadyOrAuth();
+    if (!client) {
+      return this.createAuthRequiredResponse();
     }
 
     try {
       // Resolve channel entity
-      const entity = await this.client.getEntity(channel);
+      const entity = await client.getEntity(channel);
       const channelTitle = (entity as any).title || (entity as any).firstName || channel;
       const entityType = (entity as any).className;
 
@@ -924,7 +1540,7 @@ class TelegramMCPServer {
           if (messageIds && messageIds.length > 0) {
             // First try to mark specific message contents as read
             try {
-              await this.client.invoke(
+              await client.invoke(
                 new Api.messages.ReadMessageContents({
                   id: messageIds,
                 })
@@ -932,7 +1548,7 @@ class TelegramMCPServer {
               apiMethod = "ReadMessageContents";
             } catch (contentError) {
               // Fall back to ReadHistory
-              result = await this.client.invoke(
+              result = await client.invoke(
                 new Api.messages.ReadHistory({
                   peer: entity,
                   maxId: Math.max(...messageIds),
@@ -943,7 +1559,7 @@ class TelegramMCPServer {
             markedCount = messageIds.length;
           } else if (maxId) {
             // Mark all messages up to maxId as read in private chat
-            result = await this.client.invoke(
+            result = await client.invoke(
               new Api.messages.ReadHistory({
                 peer: entity,
                 maxId: maxId,
@@ -952,10 +1568,10 @@ class TelegramMCPServer {
             markedCount = maxId;
           } else {
             // Mark all messages as read in private chat
-            const messages = await this.client.getMessages(entity, { limit: 1 });
+            const messages = await client.getMessages(entity, { limit: 1 });
             if (messages.length > 0) {
               const latestMessageId = messages[0].id;
-              result = await this.client.invoke(
+              result = await client.invoke(
                 new Api.messages.ReadHistory({
                   peer: entity,
                   maxId: latestMessageId,
@@ -987,7 +1603,7 @@ class TelegramMCPServer {
       } else {
         // For groups and supergroups, use the standard approach
         if (messageIds && messageIds.length > 0) {
-          result = await this.client.invoke(
+          result = await client.invoke(
             new Api.messages.ReadHistory({
               peer: entity,
               maxId: Math.max(...messageIds),
@@ -995,7 +1611,7 @@ class TelegramMCPServer {
           );
           markedCount = messageIds.length;
         } else if (maxId) {
-          result = await this.client.invoke(
+          result = await client.invoke(
             new Api.messages.ReadHistory({
               peer: entity,
               maxId: maxId,
@@ -1004,10 +1620,10 @@ class TelegramMCPServer {
           markedCount = maxId;
         } else {
           // Mark all messages as read (get latest message ID first)
-          const messages = await this.client.getMessages(entity, { limit: 1 });
+          const messages = await client.getMessages(entity, { limit: 1 });
           if (messages.length > 0) {
             const latestMessageId = messages[0].id;
-            result = await this.client.invoke(
+            result = await client.invoke(
               new Api.messages.ReadHistory({
                 peer: entity,
                 maxId: latestMessageId,
@@ -1036,7 +1652,7 @@ class TelegramMCPServer {
       let verificationMessage = "";
       try {
         // Get the dialog to check unread count after marking as read
-        const dialogs = await this.client.getDialogs({ limit: 100 });
+        const dialogs = await client.getDialogs({ limit: 100 });
         const targetDialog = dialogs.find(d => d.entity && (d.entity as any).id === (entity as any).id);
         
         if (targetDialog) {
@@ -1080,13 +1696,14 @@ class TelegramMCPServer {
   private async checkUnreadMessages(args: unknown): Promise<CallToolResult> {
     const { limit, includeChannels, onlyWithUnread } = CheckUnreadMessagesSchema.parse(args);
 
-    if (!this.client) {
-      throw new Error("Telegram client not initialized");
+    const client = await this.ensureReadyOrAuth();
+    if (!client) {
+      return this.createAuthRequiredResponse();
     }
 
     try {
       // Get dialogs (conversations) that the user has access to
-      const dialogs = await this.client.getDialogs({ limit });
+      const dialogs = await client.getDialogs({ limit });
       
       const chatsWithUnread = [];
 
@@ -1190,120 +1807,93 @@ class TelegramMCPServer {
   }
 
   private async getPrivateMessages(args: unknown): Promise<CallToolResult> {
-    const { contact, limit, sinceMinutes, sinceHours, sinceDate } = GetPrivateMessagesSchema.parse(args);
+    const params = GetPrivateMessagesSchema.parse(args);
 
-    if (!this.client) {
-      throw new Error("Telegram client not initialized");
+    if (!(await this.ensureReadyOrAuth())) {
+      return this.createAuthRequiredResponse();
     }
 
     try {
       // Resolve contact entity - could be username, phone, or user ID
-      let entity;
-      try {
-        entity = await this.client.getEntity(contact);
-      } catch (error) {
-        throw new Error(`Could not find contact "${contact}". Make sure the username (@username), phone number (+1234567890), or user ID is correct and you have a conversation with this contact.`);
-      }
+      const entity = await this.resolveEntitySmart(params.contact);
 
       // Verify it's a private chat (User entity)
       if ((entity as any).className !== "User") {
-        throw new Error(`"${contact}" is not a private chat. Use get_recent_messages for channels and groups.`);
+        throw new Error(`"${params.contact}" is not a private chat. Use get_recent_messages for channels and groups.`);
       }
-      
-      // Calculate cutoff date if time filtering is requested
-      const cutoffDate = this.calculateCutoffDate(sinceMinutes, sinceHours, sinceDate);
-      
-      // Get recent messages from the private conversation
-      const messages = await this.client.getMessages(entity, { limit: cutoffDate ? limit * 3 : limit });
 
-      let filteredMessages = messages.map((msg: any) => {
-        const date = new Date(msg.date * 1000);
-        
-        // Determine sender info
-        let sender = "Unknown";
-        let isOutgoing = false;
-        
-        if (msg.out) {
-          sender = "You";
-          isOutgoing = true;
-        } else {
-          // For incoming messages in private chat, it's from the contact
-          const firstName = (entity as any).firstName || "";
-          const lastName = (entity as any).lastName || "";
-          sender = `${firstName} ${lastName}`.trim() || (entity as any).username || "Contact";
-        }
-        
-        return {
-          id: msg.id,
-          date: date.toISOString(),
-          timestamp: msg.date,
-          sender,
-          isOutgoing,
-          text: msg.text || "[Media/Non-text message]",
-          messageType: msg.text ? "text" : "media",
-          replyToMsgId: msg.replyToMsgId || null,
-        };
+      // Calculate cutoff date if time filtering is requested
+      const cutoffDate = this.calculateCutoffDate(params.sinceMinutes, params.sinceHours, params.sinceDate, params.tz);
+
+      // Page through the window so busy conversations are not silently truncated
+      const window = await this.fetchMessageWindow(entity, {
+        limit: params.limit,
+        offsetId: params.offsetId,
+        cutoffDate,
       });
 
-      // Apply time filtering if specified
-      if (cutoffDate) {
-        filteredMessages = filteredMessages.filter(msg => 
-          new Date(msg.timestamp * 1000) >= cutoffDate
-        );
-        // Limit after filtering
-        filteredMessages = filteredMessages.slice(0, limit);
-      }
+      let filteredMessages = window.collected.map((msg: any) => this.mapMessage(msg, entity));
+      filteredMessages = this.applyOutputOptions(filteredMessages, { maxTextLength: params.maxTextLength });
 
       const contactName = `${(entity as any).firstName || ""} ${(entity as any).lastName || ""}`.trim() 
         || (entity as any).username 
-        || contact;
+        || params.contact;
 
       const result: any = {
         success: true,
         contact: contactName,
         contactId: (entity as any).id.toString(),
-        contactUsername: (entity as any).username || null,
+        contactUsername: this.extractUsername(entity) ? `@${this.extractUsername(entity)}` : null,
         messageCount: filteredMessages.length,
         messages: filteredMessages,
-        timeFilter: cutoffDate ? {
-          since: cutoffDate.toISOString(),
-          sinceMinutes,
-          sinceHours,
-          sinceDate,
-        } : null,
+        hasMore: window.hasMore,
+        nextOffsetId: window.nextOffsetId,
       };
+
+      if (window.newestMessageDate) {
+        result.lastMessageDate = window.newestMessageDate;
+      }
+
+      result.timeFilter = cutoffDate ? {
+        since: cutoffDate.toISOString(),
+        sinceMinutes: params.sinceMinutes,
+        sinceHours: params.sinceHours,
+        sinceDate: params.sinceDate,
+        tz: params.tz ?? "UTC",
+      } : null;
 
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify(result),
           },
         ],
       };
     } catch (error) {
-      throw new Error(`Failed to get private messages from ${contact}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Failed to get private messages from ${params.contact}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   private async getChatStatus(args: unknown): Promise<CallToolResult> {
     const { chat } = GetChatStatusSchema.parse(args);
 
-    if (!this.client) {
-      throw new Error("Telegram client not initialized");
+    const client = await this.ensureReadyOrAuth();
+    if (!client) {
+      return this.createAuthRequiredResponse();
     }
 
     try {
       // Resolve chat entity
-      const entity = await this.client.getEntity(chat);
+      const entity = await client.getEntity(chat);
       const entityType = (entity as any).className;
       
       // Get dialog info to check unread status
-      const dialogs = await this.client.getDialogs({ limit: 100 });
+      const dialogs = await client.getDialogs({ limit: 100 });
       const targetDialog = dialogs.find(d => d.entity && (d.entity as any).id === (entity as any).id);
       
       // Get recent messages to see read status
-      const recentMessages = await this.client.getMessages(entity, { limit: 5 });
+      const recentMessages = await client.getMessages(entity, { limit: 5 });
       
       let chatTitle = "Unknown";
       if (entityType === "User") {
@@ -1335,7 +1925,7 @@ class TelegramMCPServer {
         recentMessages: recentMessages.map((msg: any) => ({
           id: msg.id,
           date: new Date(msg.date * 1000).toISOString(),
-          text: (msg.text || "[Media/Non-text message]").substring(0, 100) + (msg.text && msg.text.length > 100 ? "..." : ""),
+          text: (msg.text || msg.message || "[Media/Non-text message]").substring(0, 100) + ((msg.text || msg.message) && (msg.text || msg.message).length > 100 ? "..." : ""),
           isOutgoing: msg.out || false,
           readDate: msg.readDate ? new Date(msg.readDate * 1000).toISOString() : null,
           // Note: msg.readDate might not always be available for private chats
