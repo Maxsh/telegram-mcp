@@ -672,6 +672,28 @@ To watch for changes and rebuild:
 npm run watch
 ```
 
+## Testing
+
+```bash
+npm test              # unit tests + smoke test
+npm run test:unit     # unit tests only (tests/*.test.ts, fake Telegram client)
+npm run test:smoke    # spawns the built server and checks tools/list
+npm run test:coverage # unit tests with a coverage report
+```
+
+The unit suite (`tests/*.test.ts`) runs on Node's built-in test runner with a
+fake Telegram client — no network access and no credentials. It covers every
+tool (`get_recent_messages` pagination and output options, `get_messages_multi`,
+`get_channel_info`, `search_messages`, `get_available_channels`,
+`mark_messages_read`, `check_unread_messages`, `get_private_messages`,
+`get_chat_status`, the authorization flow), the pure helpers (time zones, id
+normalization, media typing, output shaping), and the tool catalog/dispatch
+contract. It is wired into CI (`.github/workflows/ci.yml`) on every push and PR.
+
+`scripts/live-check.ts` is a manual end-to-end check against the real Telegram
+API (needs credentials in `~/.secrets/telegram-*`) and is intentionally not part
+of CI.
+
 ## Security Notes
 
 - **Session Security**: Keep your session string secure. It provides full access to your Telegram account.
