@@ -20,6 +20,7 @@ permissions:
   contents: read
   actions: read
   checks: write # dorny/test-reporter publishes a check run with annotations
+  pull-requests: write # sticky coverage comment on pull requests
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -50,6 +51,9 @@ jobs:
       - name: Unit tests with coverage (JUnit + Cobertura/LCOV)
         run: npm run test:ci
 
+      - name: Smoke test (spawn built server, tools/list)
+        run: npm run test:smoke
+
       - name: Publish run summary (tests + coverage)
         if: ${{ !cancelled() }}
         run: npm run ci:summary
@@ -77,9 +81,11 @@ jobs:
           output: both
           thresholds: '60 80'
 
+      # One comment per PR (from a single matrix leg, so legs don't race on the
+      # same sticky comment). Skipped for fork PRs, whose token is read-only.
       - name: Add coverage comment to PR
         uses: marocchino/sticky-pull-request-comment@v2
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && matrix.node-version == '24' && github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           recreate: true
           path: code-coverage-results.md
