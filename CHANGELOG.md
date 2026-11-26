@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- README restructured into a short overview: the detailed tool reference and
+  response schemas moved to [docs/TOOLS.md](docs/TOOLS.md), the full
+  troubleshooting guide to [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md);
+  the README now carries a compact tool table and links the reference docs.
+
 ## [0.1.0] - 2026-11-26
 
 First tagged release.
