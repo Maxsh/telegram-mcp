@@ -1,6 +1,26 @@
 # MCP Telegram Server
 
-A Model Context Protocol (MCP) server that provides tools for interacting with Telegram channels, groups, and private conversations on behalf of a user. This server allows MCP clients to retrieve recent messages, search messages, get chat information, and manage conversations.
+[![CI](https://github.com/Maxsh/telegram-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Maxsh/telegram-mcp/actions/workflows/ci.yml?query=branch%3Amain)
+[![tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FMaxsh%2Ftelegram-mcp%2Fbadges%2Ftests.json)](https://github.com/Maxsh/telegram-mcp/actions/workflows/ci.yml?query=branch%3Amain)
+[![coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FMaxsh%2Ftelegram-mcp%2Fbadges%2Fcoverage.json)](https://github.com/Maxsh/telegram-mcp/actions/workflows/ci.yml?query=branch%3Amain)
+[![release](https://img.shields.io/github/v/release/Maxsh/telegram-mcp?sort=semver)](https://github.com/Maxsh/telegram-mcp/releases)
+[![node](https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white)](package.json)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets AI assistants read, search and manage Telegram channels, groups and private conversations **on behalf of your user account** (not a bot).
+
+**Contents:** [Features](#features) · [Quick start](#quick-start) · [Setup](#setup) · [Tools](#available-tools) · [Response schemas](#response-schemas) · [MCP client configuration](#mcp-client-configuration) · [Development](#development) · [Testing](#testing) · [Contributing](#contributing) · [Releases](#releases) · [Security](#security-notes)
+
+## Quick start
+
+```bash
+git clone https://github.com/Maxsh/telegram-mcp.git && cd telegram-mcp
+npm ci && npm run build
+export TELEGRAM_API_ID=... TELEGRAM_API_HASH=...   # from https://my.telegram.org/apps
+npm start   # stdio MCP server; authorize via the telegram_authorize tool
+```
+
+Then register `node /absolute/path/to/telegram-mcp/dist/index.js` in your MCP client (see [MCP client configuration](#mcp-client-configuration)).
 
 ## Features
 
@@ -20,6 +40,8 @@ A Model Context Protocol (MCP) server that provides tools for interacting with T
 
 ## Prerequisites
 
+0. **Node.js 22 or newer** (CI runs on 22, 24 and 26).
+
 1. **Telegram API Credentials**: You need to obtain API credentials from Telegram:
    - Go to https://my.telegram.org/apps
    - Log in with your phone number
@@ -33,7 +55,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with T
 
 1. Install dependencies:
 ```bash
-npm install
+npm ci
 ```
 
 2. Build the project:
@@ -68,37 +90,14 @@ Simply start using any Telegram function and you'll be prompted to authenticate:
 
 #### Option B: Pre-generated Session String
 
-### 2. Generate Session String (Optional)
+Generate a persistent session string once with the bundled script (prompts for phone number, code and optional 2FA password):
 
-To generate a session string, you can create a simple script:
-
-```typescript
-import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions/index.js";
-import input from "input";
-
-const apiId = parseInt(process.env.TELEGRAM_API_ID!);
-const apiHash = process.env.TELEGRAM_API_HASH!;
-
-const session = new StringSession("");
-const client = new TelegramClient(session, apiId, apiHash, {
-  connectionRetries: 5,
-});
-
-(async () => {
-  await client.start({
-    phoneNumber: async () => await input.text("Enter your phone number: "),
-    password: async () => await input.text("Enter your password: "),
-    phoneCode: async () => await input.text("Enter the code you received: "),
-    onError: (err) => console.log(err),
-  });
-  
-  console.log("Session string:", client.session.save());
-  console.log("Save this session string as TELEGRAM_SESSION environment variable");
-  
-  await client.disconnect();
-})();
+```bash
+export TELEGRAM_API_ID=... TELEGRAM_API_HASH=...
+npm run generate-session
 ```
+
+Store the printed string as `TELEGRAM_SESSION` (environment variable or secret manager — never commit it). See [SETUP.md](SETUP.md) for a step-by-step walkthrough.
 
 ## Usage
 
@@ -688,11 +687,51 @@ tool (`get_recent_messages` pagination and output options, `get_messages_multi`,
 `mark_messages_read`, `check_unread_messages`, `get_private_messages`,
 `get_chat_status`, the authorization flow), the pure helpers (time zones, id
 normalization, media typing, output shaping), and the tool catalog/dispatch
-contract. It is wired into CI (`.github/workflows/ci.yml`) on every push and PR.
+contract.
 
 `scripts/live-check.ts` is a manual end-to-end check against the real Telegram
 API (needs credentials in `~/.secrets/telegram-*`) and is intentionally not part
 of CI.
+
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and
+pull request, on Node 22, 24 and 26:
+
+- build (`tsc`, strict), unit tests under c8, smoke test;
+- **run Summary** with passed/failed/skipped counts, per-suite breakdown,
+  failure details and coverage (statements/branches/functions/lines);
+- **JUnit check run** with failure annotations (`dorny/test-reporter`);
+- **coverage comment** on pull requests (Cobertura, `irongut/CodeCoverageSummary`);
+- raw reports (JUnit XML, Cobertura, LCOV) as downloadable artifacts.
+
+The `tests` and `coverage` badges above are
+[shields.io endpoint badges](https://shields.io/badges/endpoint-badge) generated
+by `scripts/ci-summary.ts` and published to the `badges` branch on every push to
+`main`, so they always show the latest `main` build.
+
+Reproduce the CI report locally:
+
+```bash
+npm run test:ci && npm run ci:summary   # markdown summary on stdout, reports in reports/ and coverage/
+```
+
+## Contributing
+
+All changes go through pull requests with tests — see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the full rules in [AGENTS.md](AGENTS.md)
+(which also apply to AI coding agents). Changes are recorded in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Releases
+
+Versions follow [SemVer](https://semver.org/); release notes come from
+[CHANGELOG.md](CHANGELOG.md) ([Keep a Changelog](https://keepachangelog.com/)).
+Pushing a `vX.Y.Z` tag on `main` runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which verifies
+the tag, builds, tests and publishes the
+[GitHub Release](https://github.com/Maxsh/telegram-mcp/releases) with an
+`npm pack` tarball. The process is described in [AGENTS.md → Releases](AGENTS.md#5-releases).
 
 ## Security Notes
 
@@ -700,6 +739,7 @@ of CI.
 - **API Credentials**: Never share your API ID and hash publicly.
 - **Channel Access**: The server can only access channels that your Telegram account has permission to read.
 - **Rate Limiting**: Telegram has rate limits. The server doesn't implement rate limiting, so use responsibly.
+- **Reporting vulnerabilities**: privately, see [SECURITY.md](SECURITY.md).
 
 ## Troubleshooting
 
@@ -751,4 +791,4 @@ If `mark_messages_read` isn't working:
 
 ## License
 
-MIT License
+[MIT](LICENSE)

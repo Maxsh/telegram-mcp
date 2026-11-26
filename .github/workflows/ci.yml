@@ -20,6 +20,7 @@ permissions:
   contents: read
   actions: read
   checks: write # dorny/test-reporter publishes a check run with annotations
+  pull-requests: write # sticky coverage comment on pull requests
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -50,6 +51,9 @@ jobs:
       - name: Unit tests with coverage (JUnit + Cobertura/LCOV)
         run: npm run test:ci
 
+      - name: Smoke test (spawn built server, tools/list)
+        run: npm run test:smoke
+
       - name: Publish run summary (tests + coverage)
         if: ${{ !cancelled() }}
         run: npm run ci:summary
@@ -77,9 +81,11 @@ jobs:
           output: both
           thresholds: '60 80'
 
+      # One comment per PR (from a single matrix leg, so legs don't race on the
+      # same sticky comment). Skipped for fork PRs, whose token is read-only.
       - name: Add coverage comment to PR
         uses: marocchino/sticky-pull-request-comment@v2
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && matrix.node-version == '24' && github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           recreate: true
           path: code-coverage-results.md
@@ -94,5 +100,40 @@ jobs:
             coverage/cobertura-coverage.xml
             coverage/lcov.info
             coverage/coverage-summary.json
+            reports/badges/*.json
           if-no-files-found: warn
           retention-days: 30
+
+  # Publishes shields.io endpoint JSON (tests / coverage) to the orphan
+  # `badges` branch so the README badges reflect the latest main build.
+  # Only runs for pushes to main; PRs and feature branches never touch it.
+  publish-badges:
+    name: publish README badges
+    needs: test
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push to the badges branch
+    steps:
+      - name: Download reports (node 24)
+        uses: actions/download-artifact@v8
+        with:
+          name: test-reports-node-24
+          path: artifact
+
+      - name: Push badge JSON to the badges branch
+        env:
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          src="$(find artifact -type d -name badges | head -1)"
+          test -n "$src" || { echo "no badge JSON in artifact"; exit 1; }
+          mkdir publish && cd publish
+          git init -q -b badges
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp "../$src"/*.json .
+          git add -A
+          git commit -q -m "Update badges for ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${REPO}.git" badges
