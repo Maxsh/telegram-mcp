@@ -105,15 +105,7 @@ Replace `/full/path/to/mcp-telegram-server/` with the actual full path to your p
 
 ### For Other MCP Clients
 
-Refer to your MCP client's documentation for configuration. The server communicates via stdio and provides the following tools:
-
-- `get_recent_messages`: Get recent messages from channels, groups, or private chats
-- `get_private_messages`: Get messages from private conversations with enhanced formatting
-- `get_channel_info`: Get information about channels, groups, or private chats
-- `search_messages`: Search for messages in channels, groups, or private chats
-- `get_available_channels`: List all available channels and groups
-- `mark_messages_read`: Mark messages as read in groups/supergroups/private chats (not broadcast channels)
-- `check_unread_messages`: Check for unread messages in private chats and groups
+Refer to your MCP client's documentation for configuration. The server communicates via stdio and exposes 12 tools — see [docs/TOOLS.md](docs/TOOLS.md) for the full reference.
 
 ## Step 8: Usage Examples
 

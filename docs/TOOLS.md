@@ -1,0 +1,522 @@
+# Tool reference
+
+All 12 tools exposed by the MCP Telegram server, with parameters, examples and
+response schemas. MCP clients also receive every tool's exact input schema via
+`tools/list`, so arguments are validated before a call is dispatched.
+
+**Contents:** [get_recent_messages](#get_recent_messages) ·
+[get_messages_multi](#get_messages_multi) ·
+[get_private_messages](#get_private_messages) ·
+[get_channel_info](#get_channel_info) ·
+[search_messages](#search_messages) ·
+[get_available_channels](#get_available_channels) ·
+[mark_messages_read](#mark_messages_read) ·
+[check_unread_messages](#check_unread_messages) ·
+[get_chat_status](#get_chat_status) ·
+[telegram_authorize](#telegram_authorize) ·
+[telegram_verify_code](#telegram_verify_code) ·
+[telegram_logout](#telegram_logout) ·
+[Response schemas](#response-schemas)
+
+## get_recent_messages
+
+Retrieves recent messages from a Telegram channel, group, or private chat.
+
+**Parameters:**
+- `channel` (string, required): Channel username (@channelname), bare numeric id (1496296645), -100-prefixed id (-1001496296645), private chat username (@username), or phone number (+1234567890)
+- `limit` (number, optional): Number of messages to retrieve (default: 10, max: 100)
+- `offsetId` (number, optional): Return messages older than this message ID (pass `nextOffsetId` from the previous page to paginate)
+- `sinceMinutes` (number, optional): Get messages from the last N minutes
+- `sinceHours` (number, optional): Get messages from the last N hours
+- `sinceDate` (string, optional): Get messages since this date. Accepts a full ISO datetime (2023-12-01T10:00:00Z), a plain date (2023-12-01, midnight in `tz`), or `today` / `yesterday` (midnight in `tz`)
+- `tz` (string, optional): IANA time zone used to resolve date-only `sinceDate` and `today`/`yesterday` (e.g., Europe/Kyiv). Default: UTC
+- `maxTextLength` (number, optional): Truncate each message text to this many characters
+- `fields` (array of strings, optional): Return only these per-message fields (see [Response schemas](#response-schemas))
+- `excludeMedia` (boolean, optional): Omit media-only messages (no text and no caption)
+
+**Examples:**
+
+Get 20 most recent messages from a channel:
+```json
+{
+  "name": "get_recent_messages",
+  "arguments": {
+    "channel": "@examplechannel",
+    "limit": 20
+  }
+}
+```
+
+Get all of today's posts from a busy channel (page until `hasMore` is false):
+```json
+{
+  "name": "get_recent_messages",
+  "arguments": {
+    "channel": "@examplechannel",
+    "sinceDate": "today",
+    "tz": "Europe/Kyiv",
+    "limit": 100,
+    "maxTextLength": 500,
+    "fields": ["id", "date", "text", "link"]
+  }
+}
+```
+
+Continue pagination from a previous page:
+```json
+{
+  "name": "get_recent_messages",
+  "arguments": {
+    "channel": "@examplechannel",
+    "sinceDate": "today",
+    "tz": "Europe/Kyiv",
+    "limit": 100,
+    "offsetId": 1234
+  }
+}
+```
+
+Get messages from the last 30 minutes:
+```json
+{
+  "name": "get_recent_messages",
+  "arguments": {
+    "channel": "@examplechannel",
+    "sinceMinutes": 30
+  }
+}
+```
+
+## get_messages_multi
+
+Batch-fetch recent messages from multiple channels in one call. Each channel produces its own result or its own error, so one bad channel does not fail the call.
+
+**Parameters:**
+- `channels` (array of strings, required, 1-25): Channel identifiers (@username, bare numeric id, or -100-prefixed id)
+- `limit` (number, optional): Max messages per channel (default: 50, max: 100)
+- `sinceMinutes` / `sinceHours` / `sinceDate` / `tz` (optional): Same time-window semantics as `get_recent_messages`
+- `maxTextLength` (number, optional): Truncate each message text
+- `excludeMedia` (boolean, optional): Omit media-only messages
+
+**Example:**
+```json
+{
+  "name": "get_messages_multi",
+  "arguments": {
+    "channels": ["@examplechannel", "@anotherchannel", "1496296645"],
+    "sinceDate": "today",
+    "tz": "Europe/Kyiv",
+    "limit": 100,
+    "maxTextLength": 300
+  }
+}
+```
+
+**Response:** `summary` (`requested` / `succeeded` / `failed`) plus `results`, where each entry carries the requested `channel`, `ok: true` with the same fields as `get_recent_messages`, or `ok: false` with an `error` message.
+
+## get_private_messages
+
+Dedicated tool for retrieving messages from private chat conversations with enhanced formatting.
+
+**Parameters:**
+- `contact` (string, required): Contact identifier: username (@username), phone number (+1234567890), or user ID
+- `limit` (number, optional): Number of messages to retrieve (default: 10, max: 100)
+- `offsetId` (number, optional): Return messages older than this message ID (pass `nextOffsetId` from the previous page to paginate)
+- `sinceMinutes` (number, optional): Get messages from the last N minutes
+- `sinceHours` (number, optional): Get messages from the last N hours
+- `sinceDate` (string, optional): Get messages since this date. Accepts a full ISO datetime, a plain date (midnight in `tz`), or `today` / `yesterday`
+- `tz` (string, optional): IANA time zone for date-only `sinceDate` and `today`/`yesterday`. Default: UTC
+- `maxTextLength` (number, optional): Truncate each message text to this many characters
+
+**Examples:**
+
+Get messages from a private chat by username:
+```json
+{
+  "name": "get_private_messages",
+  "arguments": {
+    "contact": "@username",
+    "limit": 20
+  }
+}
+```
+
+Get messages from a contact by phone number:
+```json
+{
+  "name": "get_private_messages",
+  "arguments": {
+    "contact": "+1234567890",
+    "limit": 10
+  }
+}
+```
+
+Get recent private messages from the last hour:
+```json
+{
+  "name": "get_private_messages",
+  "arguments": {
+    "contact": "@username",
+    "sinceHours": 1
+  }
+}
+```
+
+## get_channel_info
+
+Retrieves information about a Telegram channel, group, or private chat. Returns a ready-to-use `peer` id (`-100`-prefixed for channels) and `type`, and resolves channels that only expose their handle via the newer collectible `usernames[]` field.
+
+**Parameters:**
+- `channel` (string, required): Channel username (@channelname), bare numeric id, -100-prefixed id, private chat username (@username), phone number (+1234567890), or chat ID
+
+**Examples:**
+
+Get channel information:
+```json
+{
+  "name": "get_channel_info",
+  "arguments": {
+    "channel": "@examplechannel"
+  }
+}
+```
+
+Get private chat information:
+```json
+{
+  "name": "get_channel_info",
+  "arguments": {
+    "channel": "@username"
+  }
+}
+```
+
+## search_messages
+
+Searches for messages containing specific text in a channel, group, or private chat.
+
+**Parameters:**
+- `channel` (string, required): Channel username (@channelname), bare numeric id, -100-prefixed id, private chat username (@username), phone number (+1234567890), or chat ID
+- `query` (string, required): Search query
+- `limit` (number, optional): Number of results (default: 10, max: 100)
+- `offsetId` (number, optional): Return matches older than this message ID
+- `sinceMinutes` (number, optional): Search messages from the last N minutes
+- `sinceHours` (number, optional): Search messages from the last N hours
+- `sinceDate` (string, optional): Search messages since this date. Accepts a full ISO datetime, a plain date (midnight in `tz`), or `today` / `yesterday`
+- `tz` (string, optional): IANA time zone for date-only `sinceDate` and `today`/`yesterday`. Default: UTC
+- `maxTextLength` (number, optional): Truncate each message text to this many characters
+
+**Examples:**
+
+Search in a channel:
+```json
+{
+  "name": "search_messages",
+  "arguments": {
+    "channel": "@examplechannel",
+    "query": "important announcement",
+    "limit": 15
+  }
+}
+```
+
+Search in a private chat:
+```json
+{
+  "name": "search_messages",
+  "arguments": {
+    "channel": "@username",
+    "query": "meeting",
+    "limit": 10
+  }
+}
+```
+
+Search messages from the last hour:
+```json
+{
+  "name": "search_messages",
+  "arguments": {
+    "channel": "@examplechannel",
+    "query": "update",
+    "sinceHours": 1
+  }
+}
+```
+
+## get_available_channels
+
+Lists all channels and groups that the user has access to. Each entry includes a ready-to-use `peer` id (`-100`-prefixed) that can be passed directly as `channel` to the other tools.
+
+**Parameters:**
+- `limit` (number, optional): Number of channels to retrieve (default: 50, max: 200)
+- `includeGroups` (boolean, optional): Include groups in addition to channels (default: false)
+
+**Example:**
+```json
+{
+  "name": "get_available_channels",
+  "arguments": {
+    "limit": 100,
+    "includeGroups": true
+  }
+}
+```
+
+## mark_messages_read
+
+Mark messages as read in a Telegram chat, group, or private conversation.
+
+**Parameters:**
+- `channel` (string, required): Channel username, group username, private chat username (@username), phone number (+1234567890), or chat ID
+- `messageIds` (array of numbers, optional): Specific message IDs to mark as read
+- `maxId` (number, optional): Mark all messages up to this message ID as read
+
+**Important Note:** This feature works with **groups, supergroups, and private chats**. Broadcast channels don't support read status operations due to Telegram API limitations.
+
+**Examples:**
+
+Mark specific messages as read in a group:
+```json
+{
+  "name": "mark_messages_read",
+  "arguments": {
+    "channel": "@examplegroup",
+    "messageIds": [123, 124, 125]
+  }
+}
+```
+
+Mark messages as read in a private chat:
+```json
+{
+  "name": "mark_messages_read",
+  "arguments": {
+    "channel": "@username"
+  }
+}
+```
+
+Mark all messages up to a specific ID as read:
+```json
+{
+  "name": "mark_messages_read",
+  "arguments": {
+    "channel": "@examplegroup",
+    "maxId": 150
+  }
+}
+```
+
+## check_unread_messages
+
+Check for unread messages in private chats and groups.
+
+**Parameters:**
+- `limit` (number, optional): Number of chats to check (default: 50, max: 200)
+- `includeChannels` (boolean, optional): Include channels in addition to private chats and groups (default: false)
+- `onlyWithUnread` (boolean, optional): Only return chats with unread messages (default: true)
+
+**Examples:**
+
+Check for unread messages in private chats and groups:
+```json
+{
+  "name": "check_unread_messages",
+  "arguments": {
+    "limit": 100
+  }
+}
+```
+
+Include channels and show all chats (even with no unread messages):
+```json
+{
+  "name": "check_unread_messages",
+  "arguments": {
+    "limit": 50,
+    "includeChannels": true,
+    "onlyWithUnread": false
+  }
+}
+```
+
+Check only chats with unread messages:
+```json
+{
+  "name": "check_unread_messages",
+  "arguments": {
+    "onlyWithUnread": true
+  }
+}
+```
+
+## get_chat_status
+
+Get detailed status information about a chat including unread count, read status, and diagnostic information.
+
+**Parameters:**
+- `chat` (string, required): Chat identifier: username (@username), phone number (+1234567890), or chat ID
+
+**Examples:**
+
+Get status of a private chat:
+```json
+{
+  "name": "get_chat_status",
+  "arguments": {
+    "chat": "@username"
+  }
+}
+```
+
+Get status of a group:
+```json
+{
+  "name": "get_chat_status",
+  "arguments": {
+    "chat": "@groupname"
+  }
+}
+```
+
+**Note:** This tool is particularly useful for debugging read status issues and understanding why `mark_messages_read` might not work as expected.
+
+## telegram_authorize
+
+Start the interactive Telegram authorization process.
+
+**Parameters:**
+- `phoneNumber` (string, required): Phone number with country code (e.g., +1234567890)
+
+**Example:**
+```json
+{
+  "name": "telegram_authorize",
+  "arguments": {
+    "phoneNumber": "+1234567890"
+  }
+}
+```
+
+## telegram_verify_code
+
+Complete the authorization process with verification code and optional 2FA password.
+
+**Parameters:**
+- `code` (string, required): Verification code sent to your phone
+- `password` (string, optional): 2FA password (if enabled on your account)
+
+**Examples:**
+
+Basic verification:
+```json
+{
+  "name": "telegram_verify_code",
+  "arguments": {
+    "code": "12345"
+  }
+}
+```
+
+With 2FA password:
+```json
+{
+  "name": "telegram_verify_code",
+  "arguments": {
+    "code": "12345",
+    "password": "your_2fa_password"
+  }
+}
+```
+
+## telegram_logout
+
+Logout from Telegram and invalidate the current session.
+
+**Example:**
+```json
+{
+  "name": "telegram_logout",
+  "arguments": {}
+}
+```
+
+## Response schemas
+
+All tools return a single JSON text block (compact, not pretty-printed). The shapes below are stable; new fields may be added over time.
+
+### get_recent_messages / get_messages_multi (per channel)
+
+```json
+{
+  "channel": "Channel Title",
+  "resolved": {
+    "id": "1496296645",
+    "peer": "-1001496296645",
+    "title": "Oleg Sharp | Oleg Sharp",
+    "username": "@olegsharp",
+    "type": "channel"
+  },
+  "messagesCount": 2,
+  "messages": [ ...message objects... ],
+  "hasMore": false,
+  "nextOffsetId": null,
+  "lastMessageDate": "2026-11-25T18:42:10.000Z",
+  "timeFilter": {
+    "since": "2026-11-24T22:00:00.000Z",
+    "sinceMinutes": null,
+    "sinceHours": null,
+    "sinceDate": "today",
+    "tz": "Europe/Kyiv"
+  }
+}
+```
+
+- `resolved` is present on every call. `peer` is the ready-to-use id form (`-100…` for channels/supergroups, `-…` for basic groups, bare id for users) and can be passed back as `channel`.
+- `hasMore: true` means older in-window messages exist; pass `nextOffsetId` as `offsetId` on the next call to fetch them. `hasMore: false` means the requested window is fully covered.
+- `lastMessageDate` is the date of the newest message seen during the scan, even when `messagesCount` is 0 — this tells an empty window (dead or quiet channel) apart from an unresolved one. An unresolvable channel returns an error instead of silently returning 0 messages.
+- `timeFilter` is present when a time window was requested. Date-only `sinceDate` values (and `today`/`yesterday`) resolve to local midnight in `tz`.
+
+### get_private_messages
+
+Same message objects, plus `success`, `contact`, `contactId`, `contactUsername`, `messageCount` (instead of `messagesCount`), `hasMore`, `nextOffsetId`, `lastMessageDate` and `timeFilter` (null when no window was requested).
+
+### search_messages
+
+`channel`, `resolved`, `query`, `resultsCount`, `messages`, and `timeFilter` when a window was requested.
+
+### Message object
+
+Every message carries these fields (extra fields may appear; use `fields` to select a subset):
+
+```json
+{
+  "id": 1234,
+  "date": "2026-11-25T18:42:10.000Z",
+  "timestamp": 1764086530,
+  "sender": "Channel",
+  "text": "Post text or media caption",
+  "mediaType": "photo",
+  "groupedId": "7616234891111920",
+  "link": "https://t.me/examplechannel/1234",
+  "forwardedFrom": "Some Channel",
+  "views": 1520,
+  "replyToMsgId": 1233
+}
+```
+
+- `text` is the message text, or the media caption when present. Only messages without any text/caption get the `[Media/Non-text message]` placeholder.
+- `mediaType`: `photo`, `image`, `video`, `animation`, `sticker`, `voice`, `audio`, `document`, `webpage`, `poll`, `location`, `contact`, `dice`, `game`, `invoice`, or `media`. Omitted for plain text.
+- `groupedId` groups album (media group) items together; only one item of an album carries the caption.
+- `link` is `https://t.me/<username>/<id>` for public channels and `https://t.me/c/<id>/<id>` for private ones (works for members); absent for groups and private chats.
+- `forwardedFrom` is a best-effort description of the forward origin (visible source name, or `channel <id>` / `user <id>`, plus `via <author>` where available).
+- `sender` is `"You"` for outgoing messages; for private chats the contact's name, otherwise `ID: <peer id>` or `"Channel"`.
+- Private chats additionally carry `isOutgoing` (boolean) and `messageType` (`text` or `media`); channels/groups carry `views`.
+
+### Output-shaping options
+
+- `maxTextLength` truncates each `text` and adds `textTruncated: true` on truncated messages.
+- `fields` projects every message onto the requested subset of: `id`, `date`, `timestamp`, `sender`, `text`, `messageType`, `isOutgoing`, `mediaType`, `groupedId`, `link`, `forwardedFrom`, `views`, `replyToMsgId`, `textTruncated`. Requested fields that do not apply come back as `null`.
+- `excludeMedia` drops messages whose text is the `[Media/Non-text message]` placeholder (i.e. media without caption).
