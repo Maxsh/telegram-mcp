@@ -50,11 +50,13 @@ async function testServer() {
 
   // Wait for response
   setTimeout(() => {
-    console.log("\nServer output:", output);
+    console.log("\nServer output:", output.slice(0, 300) + (output.length > 300 ? "..." : ""));
     server.kill();
-    
-    if (errorOutput.includes("Telegram MCP Server running on stdio")) {
-      console.log("✅ Server started successfully!");
+
+    // The server suppresses stderr (commit 876e5c8) to keep stdio JSON clean,
+    // so success is checked by the tools/list response on stdout.
+    if (output.includes('"tools"') && output.includes("get_recent_messages")) {
+      console.log("✅ Server started successfully and answered tools/list!");
     } else {
       console.log("❌ Server may have issues starting");
     }
