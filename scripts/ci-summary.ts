@@ -12,6 +12,7 @@
  */
 
 import * as fs from "fs";
+import { pathToFileURL } from "url";
 
 interface SuiteStats {
   name: string;
@@ -75,7 +76,7 @@ function formatDuration(seconds: number): string {
   return `${m}m ${Math.round(seconds - m * 60)}s`;
 }
 
-function parseJUnit(path: string): { suites: SuiteStats[]; failures: FailedTest[] } | null {
+export function parseJUnit(path: string): { suites: SuiteStats[]; failures: FailedTest[] } | null {
   if (!fs.existsSync(path)) {
     return null;
   }
@@ -83,29 +84,42 @@ function parseJUnit(path: string): { suites: SuiteStats[]; failures: FailedTest[
   const suites: SuiteStats[] = [];
   const failures: FailedTest[] = [];
 
-  const suiteTags = [...xml.matchAll(/<testsuite\s+([^>]*)>/g)].map((m) => m[1]);
-  for (const tag of suiteTags) {
-    suites.push({
-      name: attr(tag, "name") || "(unnamed suite)",
-      tests: num(tag, "tests"),
-      failures: num(tag, "failures"),
-      errors: num(tag, "errors"),
-      skipped: num(tag, "skipped"),
-      time: num(tag, "time"),
-    });
-  }
-
+  // Counts are derived from the <testcase> elements themselves, grouped by
+  // their suite (classname). The <testsuite> attributes are not summed:
+  // node:test nests suites for nested describe() blocks and counts child
+  // suites in the parent's tests="", so summing them double-counts.
+  const byName = new Map<string, SuiteStats>();
   const caseBlocks = [...xml.matchAll(/<testcase\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)];
   for (const block of caseBlocks) {
     const header = block[1];
     const body = block[2] ?? "";
-    const failed = /<(failure|error)[\s>]/.test(body);
-    if (!failed) {
+    const suiteName = attr(header, "classname") || "(no suite)";
+    let suite = byName.get(suiteName);
+    if (!suite) {
+      suite = { name: suiteName, tests: 0, failures: 0, errors: 0, skipped: 0, time: 0 };
+      byName.set(suiteName, suite);
+      suites.push(suite);
+    }
+    suite.tests += 1;
+    suite.time += num(header, "time");
+
+    if (/<skipped[\s/>]/.test(body)) {
+      suite.skipped += 1;
       continue;
+    }
+    const isError = /<error[\s>]/.test(body);
+    const isFailure = /<failure[\s>]/.test(body);
+    if (!isError && !isFailure) {
+      continue;
+    }
+    if (isFailure) {
+      suite.failures += 1;
+    } else {
+      suite.errors += 1;
     }
     const messageMatch = body.match(/<(?:failure|error)\s+[^>]*message="([^"]*)"/);
     failures.push({
-      suite: attr(header, "classname") || attr(header, "name"),
+      suite: suiteName,
       name: attr(header, "name") || "(unnamed test)",
       message: messageMatch ? decodeEntities(messageMatch[1]).slice(0, 400) : "(no message)",
     });
@@ -128,7 +142,7 @@ function coverageEntry(raw: any): CoverageEntry {
   };
 }
 
-function readCoverage(path: string): { total: Record<string, CoverageEntry>; files: Array<[string, Record<string, CoverageEntry>]> } | null {
+export function readCoverage(path: string): { total: Record<string, CoverageEntry>; files: Array<[string, Record<string, CoverageEntry>]> } | null {
   if (!fs.existsSync(path)) {
     return null;
   }
@@ -145,7 +159,7 @@ function readCoverage(path: string): { total: Record<string, CoverageEntry>; fil
   }
 }
 
-function render(junit: ReturnType<typeof parseJUnit>, coverage: ReturnType<typeof readCoverage>): string {
+export function render(junit: ReturnType<typeof parseJUnit>, coverage: ReturnType<typeof readCoverage>): string {
   const lines: string[] = [];
 
   const totals = junit
@@ -278,10 +292,59 @@ function render(junit: ReturnType<typeof parseJUnit>, coverage: ReturnType<typeo
   return lines.join("\n");
 }
 
+/**
+ * shields.io "endpoint" badge JSON (https://shields.io/badges/endpoint-badge).
+ * CI publishes these files to the `badges` branch on pushes to main; the
+ * README badges read them via img.shields.io/endpoint?url=<raw file URL>.
+ */
+function badgeColor(pct: number): string {
+  if (pct >= HEALTH_THRESHOLDS[0]) return "brightgreen";
+  if (pct >= HEALTH_THRESHOLDS[1]) return "yellow";
+  if (pct >= HEALTH_THRESHOLDS[2]) return "orange";
+  return "red";
+}
+
+export function buildBadges(
+  junit: ReturnType<typeof parseJUnit>,
+  coverage: ReturnType<typeof readCoverage>
+): Record<string, { schemaVersion: 1; label: string; message: string; color: string }> {
+  const badges: Record<string, { schemaVersion: 1; label: string; message: string; color: string }> = {};
+
+  if (junit) {
+    const t = junit.suites.reduce(
+      (acc, s) => ({ tests: acc.tests + s.tests, failed: acc.failed + s.failures + s.errors, skipped: acc.skipped + s.skipped }),
+      { tests: 0, failed: 0, skipped: 0 }
+    );
+    const passed = t.tests - t.failed - t.skipped;
+    badges.tests = {
+      schemaVersion: 1,
+      label: "tests",
+      message: t.failed > 0 ? `${passed} passed, ${t.failed} failed` : `${passed} passed`,
+      color: t.failed > 0 ? "red" : "brightgreen",
+    };
+  } else {
+    badges.tests = { schemaVersion: 1, label: "tests", message: "unknown", color: "lightgrey" };
+  }
+
+  if (coverage) {
+    const pct = coverageEntry(coverage.total.lines).pct;
+    badges.coverage = { schemaVersion: 1, label: "coverage", message: `${pct.toFixed(1)}%`, color: badgeColor(pct) };
+  } else {
+    badges.coverage = { schemaVersion: 1, label: "coverage", message: "unknown", color: "lightgrey" };
+  }
+
+  return badges;
+}
+
 function main(): void {
   const junit = parseJUnit("reports/junit.xml");
   const coverage = readCoverage("coverage/coverage-summary.json");
   const markdown = render(junit, coverage);
+
+  fs.mkdirSync("reports/badges", { recursive: true });
+  for (const [name, badge] of Object.entries(buildBadges(junit, coverage))) {
+    fs.writeFileSync(`reports/badges/${name}.json`, JSON.stringify(badge) + "\n");
+  }
 
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {
@@ -292,4 +355,8 @@ function main(): void {
   }
 }
 
-main();
+// Run only when executed directly (tsx scripts/ci-summary.ts), not when
+// imported by tests.
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
+  main();
+}

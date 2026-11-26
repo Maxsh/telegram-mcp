@@ -94,5 +94,40 @@ jobs:
             coverage/cobertura-coverage.xml
             coverage/lcov.info
             coverage/coverage-summary.json
+            reports/badges/*.json
           if-no-files-found: warn
           retention-days: 30
+
+  # Publishes shields.io endpoint JSON (tests / coverage) to the orphan
+  # `badges` branch so the README badges reflect the latest main build.
+  # Only runs for pushes to main; PRs and feature branches never touch it.
+  publish-badges:
+    name: publish README badges
+    needs: test
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push to the badges branch
+    steps:
+      - name: Download reports (node 24)
+        uses: actions/download-artifact@v8
+        with:
+          name: test-reports-node-24
+          path: artifact
+
+      - name: Push badge JSON to the badges branch
+        env:
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          src="$(find artifact -type d -name badges | head -1)"
+          test -n "$src" || { echo "no badge JSON in artifact"; exit 1; }
+          mkdir publish && cd publish
+          git init -q -b badges
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp "../$src"/*.json .
+          git add -A
+          git commit -q -m "Update badges for ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${REPO}.git" badges
