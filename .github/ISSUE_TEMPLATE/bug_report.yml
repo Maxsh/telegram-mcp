@@ -1,0 +1,38 @@
+name: Bug report
+description: Something does not work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste credentials, session strings or phone numbers.** Redact them.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or commit SHA
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: input
+    id: tool
+    attributes:
+      label: Tool
+      placeholder: get_recent_messages
+  - type: textarea
+    id: request
+    attributes:
+      label: Tool call (arguments)
+      render: json
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual behavior
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: Node version, OS, MCP client
+      placeholder: Node 24, Linux, Claude Desktop
